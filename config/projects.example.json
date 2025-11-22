@@ -1,0 +1,44 @@
+{
+  "port": 4000,
+  "path": "/github",
+
+  "rootDir": "<ABSOLUTE_ROOT_DIR_PATH>",
+  "deployScript": "deploy.sh",
+
+  "projects": [
+    {
+      "name": "<PROJECT_NAME_1>",
+      "repo": "<GITHUB_FULL_REPO_NAME_1>",
+      "branches": {
+        "<BRANCH_NAME_1>": {
+          "description": "Deploy config for <BRANCH_NAME_1> of <PROJECT_NAME_1>",
+          "repoDir": "repos/<PROJECT_DIR_1>/<BRANCH_NAME_1>",
+          "composeFile": "repos/<PROJECT_DIR_1>/docker-compose.yml",
+          "service": "<DOCKER_SERVICE_NAME_1>",
+          "enabled": true
+        },
+        "<BRANCH_NAME_2>": {
+          "description": "Deploy config for <BRANCH_NAME_2> of <PROJECT_NAME_1>",
+          "repoDir": "repos/<PROJECT_DIR_1>/<BRANCH_NAME_2>",
+          "composeFile": "repos/<PROJECT_DIR_1>/docker-compose.yml",
+          "service": "<DOCKER_SERVICE_NAME_2>",
+          "enabled": true
+        }
+      }
+    },
+
+    {
+      "name": "<PROJECT_NAME_2>",
+      "repo": "<GITHUB_FULL_REPO_NAME_2>",
+      "branches": {
+        "<BRANCH_NAME_1>": {
+          "description": "Deploy config for <BRANCH_NAME_1> of <PROJECT_NAME_2>",
+          "repoDir": "repos/<PROJECT_DIR_2>/<BRANCH_NAME_1>",
+          "composeFile": "repos/<PROJECT_DIR_2>/docker-compose.yml",
+          "service": "<DOCKER_SERVICE_NAME_3>",
+          "enabled": true
+        }
+      }
+    }
+  ]
+}

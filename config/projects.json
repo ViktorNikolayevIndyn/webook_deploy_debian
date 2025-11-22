@@ -1,0 +1,30 @@
+{
+  "port": 4000,
+  "path": "/github",
+
+  "rootDir": "/opt/webook_deploy_debian",
+  "deployScript": "deploy.sh",
+
+  "projects": [
+    {
+      "name": "linkify",
+      "repo": "ViktorNikolayevIndyn/linkify",
+      "branches": {
+        "dev-branch-cloud": {
+          "description": "Dev deploy for linkify",
+          "repoDir": "repos/linkify/dev",
+          "composeFile": "repos/linkify/docker-compose.yml",
+          "service": "app-dev",
+          "enabled": true
+        },
+        "prod-main": {
+          "description": "Production deploy for linkify",
+          "repoDir": "repos/linkify/prod",
+          "composeFile": "repos/linkify/docker-compose.yml",
+          "service": "app-prod",
+          "enabled": true
+        }
+      }
+    }
+  ]
+}
