@@ -57,12 +57,14 @@ validate_subdomain() {
 
 validate_path_token() {
   local val="$1"
-  # same rule (if ты хочешь прям как subdomain)
-  if [[ "$val" =~ ^[a-z0-9-\/]+$ ]]; then
+  # allowed: a-z, 0-9, -, /
+  # дефис внутри [] должен быть в начале/конце, иначе он диапазон
+  if [[ "$val" =~ ^[a-z0-9/-]+$ ]]; then
     return 0
   fi
   return 1
 }
+
 
 parse_repo_from_git_url() {
   local url="$1"
