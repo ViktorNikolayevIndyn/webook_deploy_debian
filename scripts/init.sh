@@ -1,13 +1,18 @@
 #!/bin/bash
 set -e
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
-EXAMPLE_FILE="$CONFIG_DIR/projects.example.json"
-DEPLOY_TEMPLATE="$ROOT_DIR/deploy.template.sh"
+EXAMPLE_FILE="$SCRIPT_DIR/projects.example.json"
+DEPLOY_TEMPLATE="$SCRIPT_DIR/deploy.template.sh"
 
 mkdir -p "$CONFIG_DIR"
+
+
+
 
 # ---------- Helpers ----------
 
@@ -96,6 +101,12 @@ ensure_deploy_template() {
     echo "[init] ERROR: deploy.template.sh not found at $DEPLOY_TEMPLATE"
     exit 1
   fi
+
+  if [ ! -f "$EXAMPLE_FILE" ]; then
+  echo "[init] WARNING: projects.example.json not found at $EXAMPLE_FILE"
+  # не критично – init.sh и так строит JSON с нуля
+  fi
+
 }
 
 append_project_to_config() {
@@ -205,6 +216,32 @@ copy_deploy_template_if_missing() {
     echo "[init] Copying deploy.template.sh to $workDir/deploy.sh"
     cp "$DEPLOY_TEMPLATE" "$workDir/deploy.sh"
     chmod +x "$workDir/deploy.sh"
+  fi
+}
+
+
+show_projects_summary() {
+  echo
+  echo "[init] Summary of configured projects (from $CONFIG_FILE):"
+
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[init]   No config file found."
+    return
+  fi
+
+  # Если есть jq – красивый вывод
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '
+      .projects[]? |
+      "- " +
+      (.name // "n/a") +
+      " | branch=" + (.branch // "n/a") +
+      " | domain=" + (.cloudflare.rootDomain // "n/a") +
+      " | subdomain=" + (.cloudflare.subdomain // "n/a")
+    ' "$CONFIG_FILE"
+  else
+    # fallback без jq – просто показать имена/ветки
+    grep -E '"name"|\"branch\"' "$CONFIG_FILE" || true
   fi
 }
 
@@ -329,17 +366,19 @@ while true; do
   # deploy mode (goes into deployArgs[0])
   DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "dev")
 
-  ROOT_DOMAIN=$(prompt "Root domain for this project (e.g. linkify.cloud, 1ait.eu)" "$WEBHOOK_ROOT_DOMAIN")
+ROOT_DOMAIN="$WEBHOOK_ROOT_DOMAIN"
+echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)"
 
   # subdomain – validate
-  while true; do
-    SUBDOMAIN=$(prompt "Subdomain for this project (e.g. dev, app, api)" "dev")
+    while true; do
+    SUBDOMAIN=$(prompt "Subdomain ONLY (e.g. dev for dev.${ROOT_DOMAIN})" "dev")
     if validate_subdomain "$SUBDOMAIN"; then
-      break
+        break
     else
-      echo "Invalid subdomain: only [a-z0-9-] allowed."
+        echo "Invalid subdomain: only [a-z0-9-] allowed."
     fi
-  done
+    done
+
 
   # port – numeric
   PORT=$(prompt "Local port (container/service port on host)" "3000")
@@ -418,6 +457,7 @@ while true; do
 done
 
 echo
+show_projects_summary
 echo "[init] Done."
 echo "[init] Final config: $CONFIG_FILE"
 echo "You can inspect it with: cat $CONFIG_FILE | jq"

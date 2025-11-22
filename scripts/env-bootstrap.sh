@@ -1,6 +1,17 @@
 #!/bin/bash
 set -e
 
+# Environment bootstrap:
+# - apt update / upgrade
+# - install curl, git, jq
+# - install Docker (if missing)
+# NO SSH logic here.
+
+if [ "$EUID" -ne 0 ]; then
+  echo "[env] This script must be run as root."
+  exit 1
+fi
+
 echo "[env] Updating APT..."
 apt update -y
 apt upgrade -y
@@ -36,4 +47,8 @@ else
   echo "[env] Docker already installed."
 fi
 
+echo
 echo "[env] Environment bootstrap finished."
+echo "[env] Next steps:"
+echo "  1) ./scripts/enable_ssh.sh   # create SSH user, sudo, docker group etc."
+echo "  2) ./init.sh                 # configure webhook + projects.json"
