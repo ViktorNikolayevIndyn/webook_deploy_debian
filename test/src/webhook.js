@@ -1,7 +1,9 @@
-const http = require("http");
-const { spawn } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const config = loadConfig();
+
+const WH = config.webhook || {};
+const PORT = WH.port || 4000;
+const PATHNAME = WH.path || "/github";
+const SECRET = WH.secret || "";
 
 const CONFIG_PATH = path.join(__dirname, "..", "config", "projects.json");
 const ROOT_DIR_DEFAULT = path.join(__dirname, "..");
@@ -17,10 +19,6 @@ function loadConfig() {
   }
 }
 
-let config = loadConfig();
-
-const PORT = config.port || 4000;
-const PATH = config.path || "/github";
 
 // === Поиск проекта/ветки ===
 function findBranchConfig(repoFullName, ref) {

@@ -1,29 +1,51 @@
 {
-  "port": 4000,
-  "path": "/github",
-
-  "rootDir": "/opt/webook_deploy_debian",
-  "deployScript": "deploy.sh",
+  "webhook": {
+    "port": 4000,
+    "path": "/github",
+    "secret": "",
+    "cloudflare": {
+      "enabled": true,
+      "rootDomain": "linkify.cloud",
+      "subdomain": "webhook",
+      "localPort": 4000,
+      "localPath": "/github",
+      "protocol": "http"
+    }
+  },
 
   "projects": [
     {
-      "name": "linkify",
+      "name": "linkify-dev",
       "repo": "ViktorNikolayevIndyn/linkify",
-      "branches": {
-        "dev-branch-cloud": {
-          "description": "Dev deploy for linkify",
-          "repoDir": "repos/linkify/dev",
-          "composeFile": "repos/linkify/docker-compose.yml",
-          "service": "app-dev",
-          "enabled": true
-        },
-        "prod-main": {
-          "description": "Production deploy for linkify",
-          "repoDir": "repos/linkify/prod",
-          "composeFile": "repos/linkify/docker-compose.yml",
-          "service": "app-prod",
-          "enabled": true
-        }
+      "branch": "dev-branch-cloud",
+
+      "workDir": "/opt/next-apps",
+      "deployScript": "/opt/next-apps/deploy.sh",
+      "deployArgs": ["dev"],
+
+      "cloudflare": {
+        "enabled": true,
+        "subdomain": "dev",
+        "localPort": 3001,
+        "localPath": "/",
+        "protocol": "http"
+      }
+    },
+    {
+      "name": "linkify-prod",
+      "repo": "ViktorNikolayevIndyn/linkify",
+      "branch": "prod-main",
+
+      "workDir": "/opt/next-apps",
+      "deployScript": "/opt/next-apps/deploy.sh",
+      "deployArgs": ["prod"],
+
+      "cloudflare": {
+        "enabled": true,
+        "subdomain": "app",
+        "localPort": 3002,
+        "localPath": "/",
+        "protocol": "http"
       }
     }
   ]
