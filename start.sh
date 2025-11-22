@@ -252,3 +252,117 @@ echo "[start] Env flag   : $ENV_FLAG"
 echo "[start] SSH flag   : $SSH_FLAG"
 echo "[start] Init flag  : $INIT_FLAG"
 echo "[start] You can re-run ./start.sh any time."
+
+
+# === FINAL INTERACTIVE DEPLOY STEP ======================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+CONFIG_FILE="$CONFIG_DIR/projects.json"
+
+echo
+echo "=== Final step: optional first deploy & webhook start ==="
+
+# 1) Лёгкая проверка, что конфиг есть
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[start] WARNING: $CONFIG_FILE not found. Skipping deploy prompts."
+  exit 0
+fi
+
+# 2) Показать короткое резюме окружения (опционально)
+if [ -x "$SCRIPT_DIR/check_env.sh" ]; then
+  echo
+  echo "[start] Running quick environment check..."
+  "$SCRIPT_DIR/check_env.sh" || true
+fi
+
+echo
+echo "=== Projects from config ==="
+jq -r '.projects[] | "- " + .name + " (branch=" + .branch + ", workDir=" + .workDir + ")"' "$CONFIG_FILE"
+echo
+
+# 3) Для каждого проекта спросить, запускать ли деплой
+project_count="$(jq '.projects | length' "$CONFIG_FILE")"
+
+if [ "$project_count" -eq 0 ]; then
+  echo "[start] No projects defined in projects.json. Skipping deploy."
+else
+  i=0
+  while [ "$i" -lt "$project_count" ]; do
+    name="$(jq -r ".projects[$i].name" "$CONFIG_FILE")"
+    workDir="$(jq -r ".projects[$i].workDir" "$CONFIG_FILE")"
+    deployScript="$(jq -r ".projects[$i].deployScript" "$CONFIG_FILE")"
+
+    echo
+    echo "[start] Project #$((i+1)) / $project_count"
+    echo "  Name     : $name"
+    echo "  WorkDir  : $workDir"
+    echo "  Script   : $deployScript"
+
+    # Собираем deployArgs в массив (может быть 0, 1 или несколько)
+    mapfile -t DEPLOY_ARGS < <(jq -r ".projects[$i].deployArgs[]?" "$CONFIG_FILE")
+
+    if [ "${#DEPLOY_ARGS[@]}" -gt 0 ]; then
+      echo "  Args     : ${DEPLOY_ARGS[*]}"
+    else
+      echo "  Args     : (none)"
+    fi
+
+    read -rp "Run initial deploy for '$name' now? [Y/n]: " ans
+    ans="${ans:-Y}"
+
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      if [ ! -x "$deployScript" ]; then
+        echo "[start] WARNING: deploy script '$deployScript' not found or not executable, skipping."
+      else
+        echo "[start] Running deploy for '$name'..."
+        (
+          cd "$workDir"
+          "$deployScript" "${DEPLOY_ARGS[@]}"
+        )
+        echo "[start] Deploy for '$name' finished with exit code $?"
+      fi
+    else
+      echo "[start] Skipping deploy for '$name'."
+    fi
+
+    i=$((i+1))
+  done
+fi
+
+# 4) Вопрос про запуск webhook-сервера
+echo
+echo "=== Webhook config summary ==="
+jq -r '.webhook | "- port=" + ( .port|tostring ) + ", path=" + .path + ", domain=" + .cloudflare.rootDomain + ", sub=" + .cloudflare.subdomain' "$CONFIG_FILE"
+
+echo
+read -rp "Start webhook server now? [Y/n]: " wans
+wans="${wans:-Y}"
+
+if [[ "$wans" =~ ^[Yy]$ ]]; then
+  # Если есть systemd unit - используем его
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^webhook-deploy.service'; then
+    echo "[start] Starting systemd service 'webhook-deploy.service'..."
+    systemctl enable webhook-deploy.service >/dev/null 2>&1 || true
+    systemctl restart webhook-deploy.service
+    systemctl --no-pager status webhook-deploy.service || true
+  else
+    # fallback: напрямую запустить node webhook.js в фоне
+    if command -v node >/dev/null 2>&1; then
+      echo "[start] systemd unit not found, starting 'node webhook.js' in background..."
+      (
+        cd "$ROOT_DIR"
+        nohup node webhook.js >/var/log/webhook-deploy.log 2>&1 &
+      )
+      echo "[start] Webhook started via node (log: /var/log/webhook-deploy.log)"
+    else
+      echo "[start] WARNING: node is not installed, cannot start webhook.js."
+    fi
+  fi
+else
+  echo "[start] Webhook start skipped by user."
+fi
+
+echo
+echo "=== start.sh finished ==="
