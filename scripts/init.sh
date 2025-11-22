@@ -441,7 +441,7 @@ echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)
       "$PROTOCOL" \
       "$TUNNEL_NAME"
 
-    copy_deploy_template_if_missing "$WORKDIR"
+    #copy_deploy_template_if_missing "$WORKDIR"
     echo "[init] Project added."
   else
     echo "[init] Project discarded."

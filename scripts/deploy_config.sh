@@ -180,18 +180,20 @@ for i in $(seq 0 $((projects_count - 1))); do
     continue
   fi
 
-  # 1) гарантируем наличие репозитория
+  # 1) гарантируем наличие репозитория (git clone/pull)
   ensure_repo "$name" "$gitUrl" "$branch" "$workDir"
 
-  # 2) гарантируем наличие deploy.sh
+  # 2) гарантируем наличие deploy.sh (создаём из шаблона, если нет)
   script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript") || {
     echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
+    echo
     continue
   }
 
   # 3) запускаем deploy.sh
   run_deploy "$name" "$workDir" "$script_path" "${deployArgs[@]}"
 done
+
 
 echo "=== Webhook config summary ==="
 jq -r '
