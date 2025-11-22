@@ -1,203 +1,237 @@
 #!/bin/bash
 set -e
 
-# === deploy_config.sh ===
-# - Проверяет минимальное окружение (docker, jq, node/cloudflared – если есть)
-# - Показывает проекты из config/projects.json
-# - По каждому проекту спрашивает: запустить первый деплой или пропустить
-# - Спрашивает, запускать ли webhook.js / webhook-deploy.service
-# - В конце показывает краткий статус (docker / webhook / порт)
+echo "=== deploy_config.sh ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 
-echo "=== deploy_config.sh ==="
 echo "[deploy_config] ROOT_DIR   = $ROOT_DIR"
 echo "[deploy_config] SCRIPT_DIR = $SCRIPT_DIR"
 echo "[deploy_config] CONFIG_DIR = $CONFIG_DIR"
 echo
 
-# --- Минимальные проверки окружения ---
-
-need_cmd() {
-  local cmd="$1"
-  local desc="$2"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "[deploy_config] ERROR: '$cmd' not found in PATH ($desc required)."
-    return 1
+# --- helper: check binaries ---
+need_bin() {
+  local bin="$1"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[deploy_config] ERROR: '$bin' not found in PATH. Aborting."
+    exit 1
   fi
-  return 0
 }
 
-# Docker обязателен для деплоя
-need_cmd docker "Docker engine" || {
-  echo "[deploy_config] Aborting: docker is required."
-  exit 1
+opt_warn_bin() {
+  local bin="$1"
+  local msg="$2"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[deploy_config] WARNING: '$bin' not found. $msg"
+  fi
 }
 
-# jq обязателен для работы с config/projects.json
-need_cmd jq "JSON parsing (config/projects.json)" || {
-  echo "[deploy_config] Aborting: jq is required."
-  exit 1
-}
+# обязательные
+need_bin jq
+need_bin docker
+need_bin git
 
-# node и cloudflared – опционально, но выводим предупреждения
-if ! command -v node >/dev/null 2>&1; then
-  echo "[deploy_config] WARNING: 'node' not found. Webhook server (webhook.js) may not run."
-fi
-
-if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "[deploy_config] WARNING: 'cloudflared' not found. Cloudflare tunnels may not work on this host."
-fi
-
-echo
-
-# --- Проверка наличия конфига ---
-
-if [ ! -f "$CONFIG_FILE" ]; then
-  echo "[deploy_config] ERROR: Config file not found: $CONFIG_FILE"
-  echo "                 Run init.sh first: $SCRIPT_DIR/init.sh"
-  exit 1
-fi
+# опциональные
+opt_warn_bin node "Webhook server (webhook.js) may not run."
+opt_warn_bin cloudflared "Cloudflare tunnels may not work on this host."
 
 echo "[deploy_config] Using config file: $CONFIG_FILE"
 echo
 
-# --- Запуск check_env.sh (если есть) для красивого резюме ---
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[deploy_config] ERROR: config file not found: $CONFIG_FILE"
+  exit 1
+fi
 
+# --- опционально вызвать check_env.sh для статуса ---
 if [ -x "$SCRIPT_DIR/check_env.sh" ]; then
   echo "[deploy_config] Running check_env.sh for summary..."
-  "$SCRIPT_DIR/check_env.sh" || true
-  echo
-else
-  echo "[deploy_config] NOTE: $SCRIPT_DIR/check_env.sh not found. Skipping extended env check."
+  "$SCRIPT_DIR/check_env.sh"
   echo
 fi
 
-# --- Вывод краткого списка проектов ---
-
-project_count="$(jq '(.projects // []) | length' "$CONFIG_FILE")"
+# --- читаем проекты из config/projects.json ---
+projects_count=$(jq '.projects | length' "$CONFIG_FILE")
+if [ "$projects_count" -eq 0 ]; then
+  echo "[deploy_config] No projects defined in $CONFIG_FILE"
+  exit 0
+fi
 
 echo "=== Projects in config ==="
-if [ "$project_count" -eq 0 ]; then
-  echo "[deploy_config] No projects defined in projects.json."
-else
-  jq -r '.projects[] | "- " + .name + " (branch=" + .branch + ", workDir=" + .workDir + ")"' "$CONFIG_FILE"
-fi
+jq -r '.projects[] | "- \(.name) (branch=\(.branch), workDir=\(.workDir))"' "$CONFIG_FILE"
 echo
 
-# --- Интерактивный деплой по каждому проекту ---
+# --- helper: ensure repo in workDir ---
+ensure_repo() {
+  local name="$1"
+  local gitUrl="$2"
+  local branch="$3"
+  local workDir="$4"
 
-if [ "$project_count" -gt 0 ]; then
-  i=0
-  while [ "$i" -lt "$project_count" ]; do
-    name="$(jq -r ".projects[$i].name" "$CONFIG_FILE")"
-    workDir="$(jq -r ".projects[$i].workDir" "$CONFIG_FILE")"
-    deployScript="$(jq -r ".projects[$i].deployScript" "$CONFIG_FILE")"
+  echo "[repo] >>> Project '$name' – ensure repo in $workDir"
+  mkdir -p "$workDir"
 
-    echo
-    echo "[deploy_config] Project #$((i+1)) / $project_count"
-    echo "  Name     : $name"
-    echo "  WorkDir  : $workDir"
-    echo "  Script   : $deployScript"
-
-    # Собрать deployArgs в массив (может быть пустой)
-    mapfile -t DEPLOY_ARGS < <(jq -r ".projects[$i].deployArgs[]?" "$CONFIG_FILE")
-
-    if [ "${#DEPLOY_ARGS[@]}" -gt 0 ]; then
-      echo "  Args     : ${DEPLOY_ARGS[*]}"
-    else
-      echo "  Args     : (none)"
+  if [ ! -d "$workDir/.git" ]; then
+    echo "[repo] No .git in $workDir – cloning..."
+    # если папка не пустая, предупредим
+    if [ "$(ls -A "$workDir" 2>/dev/null | wc -l)" -gt 0 ]; then
+      echo "[repo] WARNING: $workDir is not empty. git clone may fail if files conflict."
     fi
-
-    read -rp "Run deploy now for '$name'? [Y/n]: " ans
-    ans="${ans:-Y}"
-
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      if [ ! -x "$deployScript" ]; then
-        echo "[deploy_config] WARNING: deploy script '$deployScript' not found or not executable. Skipping."
-      else
-        echo "[deploy_config] Running deploy for '$name'..."
-        (
-          cd "$workDir"
-          "$deployScript" "${DEPLOY_ARGS[@]}"
-        )
-        echo "[deploy_config] Deploy for '$name' finished with exit code $?"
-      fi
-    else
-      echo "[deploy_config] Skipping deploy for '$name'."
-    fi
-
-    i=$((i+1))
-  done
-fi
-
-# --- Webhook config summary и запуск ---
-
-echo
-echo "=== Webhook config summary ==="
-if jq -e '.webhook' "$CONFIG_FILE" >/dev/null 2>&1; then
-  jq -r '.webhook | "- port=" + ( .port|tostring ) + ", path=" + .path + ", domain=" + .cloudflare.rootDomain + ", sub=" + .cloudflare.subdomain' "$CONFIG_FILE"
-else
-  echo "[deploy_config] No .webhook section in config."
-fi
-
-echo
-
-read -rp "Start webhook server now? [Y/n]: " wans
-wans="${wans:-Y}"
-
-if [[ "$wans" =~ ^[Yy]$ ]]; then
-  # Сначала пробуем systemd unit
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q '^webhook-deploy.service'; then
-    echo "[deploy_config] Starting systemd service 'webhook-deploy.service'..."
-    systemctl enable webhook-deploy.service >/dev/null 2>&1 || true
-    systemctl restart webhook-deploy.service
-    systemctl --no-pager status webhook-deploy.service || true
+    git clone "$gitUrl" "$workDir"
   else
-    # fallback: напрямую node webhook.js
-    if command -v node >/dev/null 2>&1; then
-      echo "[deploy_config] systemd service not found. Starting 'node webhook.js' in background..."
-      (
-        cd "$ROOT_DIR"
-        nohup node webhook.js >/var/log/webhook-deploy.log 2>&1 &
-      )
-      echo "[deploy_config] Webhook started via node (log: /var/log/webhook-deploy.log)"
+    echo "[repo] .git exists – updating existing repo..."
+  fi
+
+  # checkout нужной ветки и обновление
+  (
+    cd "$workDir"
+    echo "[repo] Using branch: $branch"
+    git fetch --all
+    git checkout "$branch"
+    git pull origin "$branch"
+  )
+  echo "[repo] <<< Repo ready for '$name'"
+  echo
+}
+
+# --- helper: ensure deploy.sh exists & executable ---
+ensure_deploy_script() {
+  local name="$1"
+  local workDir="$2"
+  local deployScript="$3"
+
+  # если не задан путь — дефолт
+  if [ -z "$deployScript" ] || [ "$deployScript" = "null" ]; then
+    deployScript="$workDir/deploy.sh"
+  fi
+
+  if [ ! -f "$deployScript" ]; then
+    # если есть шаблон – копируем
+    if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
+      echo "[deploy] deploy.sh not found for '$name', creating from template..."
+      cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
+      chmod +x "$deployScript"
     else
-      echo "[deploy_config] WARNING: node is not installed. Cannot start webhook.js."
+      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing."
+      return 1
     fi
+  else
+    chmod +x "$deployScript"
+  fi
+
+  echo "[deploy] Using deploy script: $deployScript"
+  echo "$deployScript"
+}
+
+# --- helper: run deploy.sh with args ---
+run_deploy() {
+  local name="$1"
+  local workDir="$2"
+  local deployScript="$3"
+  shift 3
+  local args=("$@")
+
+  echo "[deploy_config] Running deploy for '$name'..."
+  echo "[deploy_config] WorkDir: $workDir"
+  echo "[deploy_config] Script : $deployScript"
+  echo "[deploy_config] Args   : ${args[*]:-(none)}"
+  echo
+
+  (
+    cd "$workDir"
+    "$deployScript" "${args[@]}"
+  )
+
+  echo "[deploy_config] Deploy finished for '$name'"
+  echo
+}
+
+# --- цикл по проектам ---
+for i in $(seq 0 $((projects_count - 1))); do
+  project_json=$(jq ".projects[$i]" "$CONFIG_FILE")
+
+  name=$(echo "$project_json"       | jq -r '.name')
+  gitUrl=$(echo "$project_json"     | jq -r '.gitUrl')
+  branch=$(echo "$project_json"     | jq -r '.branch')
+  workDir=$(echo "$project_json"    | jq -r '.workDir')
+  deployScript=$(echo "$project_json" | jq -r '.deployScript // empty')
+
+  # deployArgs: массив
+  mapfile -t deployArgs < <(echo "$project_json" | jq -r '.deployArgs[]?')
+
+  echo "[deploy_config] Project #$((i+1)) / $projects_count"
+  echo "  Name     : $name"
+  echo "  WorkDir  : $workDir"
+  echo "  Git URL  : $gitUrl"
+  echo "  Branch   : $branch"
+  echo "  Script   : ${deployScript:-$workDir/deploy.sh}"
+  echo "  Args     : ${deployArgs[*]:-(none)}"
+  echo
+
+  read -r -p "Run full deploy (clone/pull + deploy.sh) now for '$name'? [Y/n]: " ans
+  ans=${ans:-Y}
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    echo "[deploy_config] Skipping '$name' by user choice."
+    echo
+    continue
+  fi
+
+  # 1) гарантируем наличие репозитория
+  ensure_repo "$name" "$gitUrl" "$branch" "$workDir"
+
+  # 2) гарантируем наличие deploy.sh
+  script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript") || {
+    echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
+    continue
+  }
+
+  # 3) запускаем deploy.sh
+  run_deploy "$name" "$workDir" "$script_path" "${deployArgs[@]}"
+done
+
+echo "=== Webhook config summary ==="
+jq -r '
+  if .webhook then
+    "- port=\(.webhook.port), path=\(.webhook.path), domain=\(.webhook.cloudflare.rootDomain // "n/a"), sub=\(.webhook.cloudflare.subdomain // "n/a")"
+  else
+    "no webhook config"
+  end
+' "$CONFIG_FILE"
+echo
+
+# запуск webhook.js (опционально)
+if command -v node >/dev/null 2>&1; then
+  read -r -p "Start webhook server now (node webhook.js)? [Y/n]: " wans
+  wans=${wans:-Y}
+  if [[ "$wans" =~ ^[Yy]$ ]]; then
+    if [ -f "$ROOT_DIR/webhook.js" ]; then
+      echo "[deploy_config] Starting webhook.js in background..."
+      nohup node "$ROOT_DIR/webhook.js" >/var/log/webhook.log 2>&1 &
+      echo "[deploy_config] webhook.js started (log: /var/log/webhook.log)"
+    else
+      echo "[deploy_config] WARNING: webhook.js not found at $ROOT_DIR/webhook.js"
+    fi
+  else
+    echo "[deploy_config] Skipping webhook.js start."
   fi
 else
-  echo "[deploy_config] Webhook start skipped by user."
+  echo "[deploy_config] WARNING: 'node' not available – webhook.js cannot be started."
 fi
-
-# --- Финальный статус ---
 
 echo
 echo "=== Final status ==="
 
 echo
 echo "[status] Docker containers:"
-docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || echo "[status] docker ps failed"
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 
 echo
-if command -v systemctl >/dev/null 2>&1; then
-  echo "[status] webhook-deploy.service:"
-  if systemctl list-unit-files | grep -q '^webhook-deploy.service'; then
-    systemctl is-enabled webhook-deploy.service 2>/dev/null || true
-    systemctl is-active webhook-deploy.service 2>/dev/null || true
-  else
-    echo "  (service not defined)"
-  fi
-fi
-
-echo
-if command -v ss >/dev/null 2>&1; then
-  echo "[status] Listening TCP ports (filtered by 4000):"
-  ss -tlnp | grep ':4000' || echo "  Port 4000 not listening (or ss output empty)."
-fi
+echo "[status] Listening TCP ports (filtered by possible webhook ports):"
+ss -tln 2>/dev/null | awk 'NR==1 || /:4000 /'
 
 echo
 echo "=== deploy_config.sh finished ==="
