@@ -23,6 +23,7 @@ mkdir -p "$CONFIG_DIR"
 # 1) Бутстрап окружения
 if [ -x "$SCRIPT_DIR/env-bootstrap.sh" ]; then
   echo "[install] Running env-bootstrap.sh (environment bootstrap)..."
+  chmod +x "$SCRIPT_DIR/env-bootstrap.sh"
   "$SCRIPT_DIR/env-bootstrap.sh"
 else
   echo "[install] WARNING: $SCRIPT_DIR/env-bootstrap.sh not found or not executable. Skipping env bootstrap."
@@ -36,6 +37,7 @@ if [ -x "$SCRIPT_DIR/enable_ssh.sh" ]; then
   ssh_ans="${ssh_ans:-Y}"
   if [[ "$ssh_ans" =~ ^[Yy]$ ]]; then
     echo "[install] Running enable_ssh.sh..."
+    chmod +x "$SCRIPT_DIR/enable_ssh.sh"
     "$SCRIPT_DIR/enable_ssh.sh"
   else
     echo "[install] SSH setup skipped by user."
@@ -49,6 +51,7 @@ echo
 # 3) Инициализация/обновление конфигурации проектов
 if [ -x "$SCRIPT_DIR/init.sh" ]; then
   echo "[install] Running init.sh (project / webhook config)..."
+    chmod +x "$SCRIPT_DIR/init.sh"
   "$SCRIPT_DIR/init.sh"
 else
   echo "[install] WARNING: $SCRIPT_DIR/init.sh not found or not executable. Skipping init.sh."
@@ -66,6 +69,7 @@ if [ -x "$SCRIPT_DIR/deploy_config.sh" ]; then
   dep_ans="${dep_ans:-Y}"
   if [[ "$dep_ans" =~ ^[Yy]$ ]]; then
     echo "[install] Starting deploy_config.sh..."
+    chmod +x "$SCRIPT_DIR/deploy_config.sh"
     "$SCRIPT_DIR/deploy_config.sh"
   else
     echo "[install] You can run it later with: $SCRIPT_DIR/deploy_config.sh"
