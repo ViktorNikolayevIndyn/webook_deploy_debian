@@ -461,3 +461,24 @@ show_projects_summary
 echo "[init] Done."
 echo "[init] Final config: $CONFIG_FILE"
 echo "You can inspect it with: cat $CONFIG_FILE | jq"
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+mkdir -p "$CONFIG_DIR"
+
+PROJECTS_STATE="$CONFIG_DIR/projects_state.json"
+PROJECTS_COUNT=$(jq '.projects | length' "$CONFIG_DIR/projects.json" 2>/dev/null || echo 0)
+
+cat > "$PROJECTS_STATE" <<EOF
+{
+  "version": "1.0.0",
+  "projectsCount": $PROJECTS_COUNT,
+  "timestamp": "$(date --iso-8601=seconds)",
+  "host": "$(hostname)"
+}
+EOF
+
+chown root:root "$PROJECTS_STATE"
+chmod 640 "$PROJECTS_STATE"
+
+echo "[init] projects_state.json written to $PROJECTS_STATE"

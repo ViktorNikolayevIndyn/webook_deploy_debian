@@ -52,3 +52,23 @@ echo "[env] Environment bootstrap finished."
 echo "[env] Next steps:"
 echo "  1) ./scripts/enable_ssh.sh   # create SSH user, sudo, docker group etc."
 echo "  2) ./init.sh                 # configure webhook + projects.json"
+
+# ... в самом конце скрипта, перед exit / концом файла ...
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+mkdir -p "$CONFIG_DIR"
+
+ENV_STATE="$CONFIG_DIR/env_bootstrap.json"
+
+cat > "$ENV_STATE" <<EOF
+{
+  "version": "1.0.0",
+  "timestamp": "$(date --iso-8601=seconds)",
+  "host": "$(hostname)"
+}
+EOF
+
+chown root:root "$ENV_STATE"
+chmod 640 "$ENV_STATE"
+
+echo "[env-bootstrap] State written to $ENV_STATE"
