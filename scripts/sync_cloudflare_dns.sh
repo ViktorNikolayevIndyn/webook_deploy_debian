@@ -8,7 +8,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 SCRIPT_DIR="$ROOT_DIR/scripts"
 CONFIG_DIR="$ROOT_DIR/config"
 
