@@ -207,23 +207,12 @@ jq -r '
 ' "$CONFIG_FILE"
 echo
 
-if command -v node >/dev/null 2>&1; then
-  read -r -p "Start webhook server now (node webhook.js)? [Y/n]: " wans
-  wans=${wans:-Y}
-  if [[ "$wans" =~ ^[Yy]$ ]]; then
-    if [ -f "$ROOT_DIR/webhook.js" ]; then
-      echo "[deploy_config] Starting webhook.js in background..."
-      nohup node "$ROOT_DIR/webhook.js" >/var/log/webhook.log 2>&1 &
-      echo "[deploy_config] webhook.js started (log: /var/log/webhook.log)"
-    else
-      echo "[deploy_config] WARNING: webhook.js not found at $ROOT_DIR/webhook.js"
-    fi
-  else
-    echo "[deploy_config] Skipping webhook.js start."
-  fi
-else
-  echo "[deploy_config] WARNING: 'node' not available – webhook.js cannot be started."
-fi
+echo "[deploy_config] NOTE: Webhook server is managed by systemd (webhook-deploy.service)."
+echo "[deploy_config] To restart it manually:"
+echo "  sudo systemctl restart webhook-deploy.service"
+echo "Logs:"
+echo "  journalctl -u webhook-deploy.service -n 20 -f"
+
 
 echo
 echo "=== Final status ==="
