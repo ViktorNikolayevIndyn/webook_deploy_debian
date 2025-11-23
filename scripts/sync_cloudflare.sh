@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+if [ "$EUID" -ne 0 ]; then
+  echo "[cf] This script must be run as root (systemd + /root/.cloudflared)."
+  exit 1
+fi
+
 echo "=== sync_cloudflare.sh ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,7 +46,6 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 1
 fi
 
-# --- Проверяем cert.pem (cloudflared tunnel login уже делали?) ---
 CLOUDFLARE_DIR="${HOME}/.cloudflared"
 CERT_FILE="$CLOUDFLARE_DIR/cert.pem"
 
@@ -53,7 +57,6 @@ if [ ! -f "$CERT_FILE" ]; then
   exit 1
 fi
 
-# --- Собираем список всех tunnelName из projects + webhook ---
 TUNNELS_JSON=$(jq -r '
   [
     .projects[]? | .cloudflare.tunnelName? // empty,
@@ -77,25 +80,20 @@ echo "[cf] Detected files in ${CLOUDFLARE_DIR}:"
 ls -1 "$CLOUDFLARE_DIR" || true
 echo
 
-# --- Текущее состояние туннелей (Name + ID) ---
 CF_TUNNELS_JSON="$(cloudflared tunnel list --output json 2>/dev/null || echo "[]")"
 
-# helper: получить credentials-файл для tunnelName
 get_credentials_file_for_tunnel() {
   local tunnelName="$1"
 
-  # ищем ID по имени
   local tid
   tid="$(echo "$CF_TUNNELS_JSON" | jq -r --arg N "$tunnelName" '
     map(select(.name == $N)) | if length==0 then "" else .[0].id end
   ')"
 
-  # если не нашли — предложить создать туннель
   if [ -z "$tid" ] || [ "$tid" = "null" ]; then
     echo "[cf] Tunnel '$tunnelName' not found in 'cloudflared tunnel list'."
     if ask_yes_no_default_yes "[cf] Create tunnel '$tunnelName' now?"; then
       cloudflared tunnel create "$tunnelName"
-      # перечитываем список туннелей и пробуем ещё раз
       CF_TUNNELS_JSON="$(cloudflared tunnel list --output json 2>/dev/null || echo "[]")"
       tid="$(echo "$CF_TUNNELS_JSON" | jq -r --arg N "$tunnelName" '
         map(select(.name == $N)) | if length==0 then "" else .[0].id end
@@ -140,11 +138,9 @@ get_credentials_file_for_tunnel() {
   echo "$chosen"
 }
 
-# --- Helper: собрать правила host -> service для одного туннеля ---
 build_rules_for_tunnel() {
   local tunnelName="$1"
 
-  # Правило для webhook (если он использует этот tunnelName)
   local webhook_rule
   webhook_rule=$(jq -r --arg T "$tunnelName" '
     if .webhook
@@ -158,7 +154,6 @@ build_rules_for_tunnel() {
     end
   ' "$CONFIG_FILE")
 
-  # Правила для проектов с этим tunnelName
   mapfile -t project_rules < <(jq -r --arg T "$tunnelName" '
     .projects[]?
     | select(.cloudflare.enabled == true)
@@ -166,7 +161,6 @@ build_rules_for_tunnel() {
     | "\(.cloudflare.subdomain).\(.cloudflare.rootDomain) http://127.0.0.1:\(.cloudflare.localPort)"
   ' "$CONFIG_FILE")
 
-  # Печатаем в stdout строки "host service"
   if [ -n "$webhook_rule" ] && [ "$webhook_rule" != "null" ]; then
     echo "$webhook_rule"
   fi
@@ -177,8 +171,6 @@ build_rules_for_tunnel() {
     done
   fi
 }
-
-# --- Основной цикл по tunnelName ---
 
 for TUN in "${TUNNELS[@]}"; do
   echo "[cf] === Processing tunnelName='${TUN}' ==="
@@ -206,12 +198,10 @@ for TUN in "${TUNNELS[@]}"; do
     echo "    $line"
   done
 
-  # Пишем YAML
   {
     echo "tunnel: ${TUN}"
     echo "credentials-file: ${CREDS_JSON}"
     echo "ingress:"
-    # каждая строка: "host service"
     for line in "${RULES[@]}"; do
       host="${line%% *}"
       svc="${line#* }"
@@ -222,12 +212,47 @@ for TUN in "${TUNNELS[@]}"; do
   } > "$CFG_YML"
 
   echo "[cf]   Written config: $CFG_YML"
+
+  # --- systemd service для туннеля ---
+  SERVICE_NAME="cloudflared-${TUN}.service"
+  SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+
+  if ask_yes_no_default_yes "[cf] Create/Update systemd service '${SERVICE_NAME}' and enable it?"; then
+    cat > "$SERVICE_PATH" <<EOF
+[Unit]
+Description=Cloudflare Tunnel - ${TUN}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+ExecStart=/usr/bin/cloudflared --config ${CFG_YML} tunnel run ${TUN}
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo "[cf]   systemd unit written: ${SERVICE_PATH}"
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME"
+    systemctl restart "$SERVICE_NAME"
+
+    echo "[cf]   Service ${SERVICE_NAME} enabled and restarted."
+  else
+    echo "[cf]   Skipping systemd service for '${TUN}'."
+  fi
+
   echo
 done
 
 echo "=== sync_cloudflare.sh finished ==="
 echo
-echo "[cf] You can run tunnels manually, e.g.:"
+echo "[cf] You can still run tunnels manually, e.g.:"
 for TUN in "${TUNNELS[@]}"; do
   echo "  cloudflared --config ${CLOUDFLARE_DIR}/config-${TUN}.yml tunnel run ${TUN}"
 done

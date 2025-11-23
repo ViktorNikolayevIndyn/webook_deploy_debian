@@ -3,8 +3,8 @@ set -e
 
 echo "=== check_env.sh ==="
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR/scripts"
 CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 
@@ -14,81 +14,78 @@ echo
 
 need_bin() {
   local bin="$1"
-  local label="$2"
   if ! command -v "$bin" >/dev/null 2>&1; then
-    echo "[WARN] $label not found in PATH."
+    echo "[WARN] '$bin' not found in PATH."
     return 1
-  else
-    echo "[OK]   $label found: $(command -v "$bin")"
-    return 0
   fi
+  echo "[OK]   $bin binary found: $(command -v "$bin")"
+  return 0
 }
 
 echo "== Binaries =="
-need_bin docker "docker"
-if ! command -v docker-compose >/dev/null 2>&1; then
-  echo "[WARN] docker-compose not found (ok if you use 'docker compose' v2 plugin)"
-else
-  echo "[OK]   docker-compose found: $(command -v docker-compose)"
-fi
-
-if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "[WARN] cloudflared not found in PATH (Cloudflare tunnels may not work yet)"
-else
-  echo "[OK]   cloudflared found: $(command -v cloudflared)"
-fi
-
-if ! command -v node >/dev/null 2>&1; then
-  echo "[WARN] node not found in PATH (webhook.js / Node apps may not run)"
-else
-  echo "[OK]   node found: $(command -v node)"
-fi
-
-need_bin curl "curl" || true
-need_bin jq "jq" || true
+need_bin docker || true
+need_bin docker-compose || true
+need_bin cloudflared || true
+need_bin node || true
+need_bin curl || true
+need_bin jq || true
 echo
 
 echo "== Docker daemon & group =="
-if docker info >/dev/null 2>&1; then
-  echo "[OK]   Docker daemon is reachable (docker info OK)"
-else
-  echo "[WARN] Docker daemon not reachable. Check 'systemctl status docker'."
-fi
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    echo "[OK]   Docker daemon is reachable (docker info OK)"
+  else
+    echo "[WARN] Docker daemon NOT reachable (docker info failed)"
+  fi
 
-if getent group docker >/dev/null 2>&1; then
-  echo "[OK]   Group 'docker' exists: $(getent group docker)"
+  if getent group docker >/dev/null 2>&1; then
+    echo "[OK]   Group 'docker' exists: $(getent group docker)"
+  else
+    echo "[WARN] Group 'docker' does not exist"
+  fi
 else
-  echo "[WARN] Group 'docker' does NOT exist yet."
+  echo "[WARN] docker not installed, skipping daemon check."
 fi
 echo
 
 echo "== State / version flags =="
-for f in env_bootstrap ssh_state projects_state; do
-  path="$CONFIG_DIR/${f}.json"
-  if [ -f "$path" ]; then
-    ver=$(jq -r '.version // "n/a"' "$path" 2>/dev/null || echo "n/a")
-    echo "[OK]   ${f} flag present: $path (version='${ver}')"
-  else
-    echo "[WARN] ${f}.json not found in $CONFIG_DIR"
-  fi
-done
-echo
+STATE_ENV="$CONFIG_DIR/env_bootstrap.json"
+STATE_SSH="$CONFIG_DIR/ssh_state.json"
+STATE_PROJ="$CONFIG_DIR/projects_state.json"
 
-echo "== Config: $CONFIG_FILE =="
-if [ -f "$CONFIG_FILE" ]; then
-  echo "[OK]   Config file exists."
-  projects_count=$(jq '.projects | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
-  echo "[OK]   Projects count: $projects_count"
+if [ -f "$STATE_ENV" ]; then
+  echo "[OK]   env_bootstrap flag present: $STATE_ENV (version='$(jq -r '.version // "?"' "$STATE_ENV" 2>/dev/null || echo "?")')"
 else
-  echo "[WARN] Config file does not exist."
-  projects_count=0
+  echo "[WARN] env_bootstrap flag missing: $STATE_ENV"
+fi
+
+if [ -f "$STATE_SSH" ]; then
+  echo "[OK]   ssh_state flag present: $STATE_SSH (version='$(jq -r '.version // "?"' "$STATE_SSH" 2>/dev/null || echo "?")')"
+else
+  echo "[WARN] ssh_state flag missing: $STATE_SSH"
+fi
+
+if [ -f "$STATE_PROJ" ]; then
+  echo "[OK]   projects_state flag present: $STATE_PROJ (version='$(jq -r '.version // "?"' "$STATE_PROJ" 2>/dev/null || echo "?")')"
+else
+  echo "[WARN] projects_state flag missing: $STATE_PROJ"
 fi
 echo
 
-if [ -f "$CONFIG_FILE" ]; then
+echo "== Config: $CONFIG_FILE =="
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[WARN] Config file does not exist."
+else
+  echo "[OK]   Config file exists."
+
+  PROJECTS_COUNT=$(jq '.projects | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
+  echo "[OK]   Projects count: $PROJECTS_COUNT"
+  echo
+
   echo "-- Webhook config --"
   jq -r '
-    if .webhook then
+    if .webhook and .webhook.cloudflare then
       "  port      : \(.webhook.port // "n/a")\n" +
       "  path      : \(.webhook.path // "n/a")\n" +
       "  domain    : \(.webhook.cloudflare.rootDomain // "n/a") (sub=\(.webhook.cloudflare.subdomain // "n/a"))\n" +
@@ -104,126 +101,81 @@ if [ -f "$CONFIG_FILE" ]; then
   echo "-- Projects summary --"
   jq -r '
     .projects[]? |
-    "- \(.name // "n/a") | branch=\(.branch // "n/a") | " +
-    "domain=\(.cloudflare.rootDomain // "n/a") | " +
-    "subdomain=\(.cloudflare.subdomain // "n/a") | " +
-    "workDir=\(.workDir // "n/a")"
+    "- \(.name // "n/a") | branch=\(.branch // "n/a") | domain=\(.cloudflare.rootDomain // "n/a") | subdomain=\(.cloudflare.subdomain // "n/a") | workDir=\(.workDir // "n/a")"
   ' "$CONFIG_FILE"
-  echo
 fi
+echo
 
 echo "== Webhook port listening test =="
-if [ -f "$CONFIG_FILE" ]; then
-  webhook_port=$(jq -r '.webhook.port // 4000' "$CONFIG_FILE" 2>/dev/null || echo 4000)
-else
-  webhook_port=4000
-fi
 
-echo "[*] Expected webhook port: $webhook_port"
+WEBHOOK_PORT=$(jq '.webhook.port // 4000' "$CONFIG_FILE" 2>/dev/null || echo 4000)
+WEBHOOK_PATH=$(jq -r '.webhook.path // "/github"' "$CONFIG_FILE" 2>/dev/null || echo "/github")
+
+echo "[*] Expected webhook port: $WEBHOOK_PORT, path: $WEBHOOK_PATH"
 
 if command -v ss >/dev/null 2>&1; then
-  if ss -tln 2>/dev/null | grep -q ":${webhook_port} "; then
-    echo "[OK] Port ${webhook_port} is LISTENING (ss -tln)"
+  if ss -tln 2>/dev/null | grep -q ":$WEBHOOK_PORT "; then
+    echo "[OK] Port $WEBHOOK_PORT is LISTENing according to ss -tln"
   else
-    echo "[WARN] Port ${webhook_port} is NOT listed as listening in ss -tln"
+    echo "[WARN] Port $WEBHOOK_PORT is NOT listed as listening in ss -tln"
   fi
 else
-  echo "[WARN] 'ss' not found, skipping low-level port check."
+  echo "[WARN] 'ss' not available, skipping port-listen check."
 fi
 
 if command -v nc >/dev/null 2>&1; then
-  if nc -z 127.0.0.1 "$webhook_port" >/dev/null 2>&1; then
-    echo "[OK] TCP connect to 127.0.0.1:${webhook_port} succeeded (nc)"
+  if echo -e "GET $WEBHOOK_PATH HTTP/1.0\r\n\r\n" | nc -w 2 127.0.0.1 "$WEBHOOK_PORT" >/dev/null 2>&1; then
+    echo "[OK] TCP connect to 127.0.0.1:$WEBHOOK_PORT succeeded (nc)"
   else
-    echo "[WARN] TCP connect to 127.0.0.1:${webhook_port} failed (nc)"
+    echo "[WARN] TCP connect to 127.0.0.1:$WEBHOOK_PORT failed (nc)"
   fi
 else
-  echo "[WARN] 'nc' not found, skipping TCP connect test."
+  echo "[WARN] 'nc' not available, skipping TCP-connect test."
 fi
 echo
 
-# ===========================
-# == Cloudflare diagnostics ==
-# ===========================
-echo "== Cloudflare =="
-
-CF_DIR="/root/.cloudflared"
-
-if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "[WARN] cloudflared binary not found. Cloudflare tunnels disabled."
+echo "== Docker containers =="
+if command -v docker >/dev/null 2>&1; then
+  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 else
-  echo "[OK]   cloudflared binary present."
+  echo "[WARN] docker not installed."
 fi
-
-if [ -d "$CF_DIR" ]; then
-  echo "[OK]   Cloudflare directory exists: $CF_DIR"
-else
-  echo "[WARN] Cloudflare directory not found: $CF_DIR"
-fi
-
-CERT="$CF_DIR/cert.pem"
-if [ -f "$CERT" ]; then
-  echo "[OK]   cert.pem present: $CERT"
-else
-  echo "[WARN] cert.pem not found in $CF_DIR"
-  echo "       Run on this host: cloudflared tunnel login"
-fi
-
-# Список туннелей из config
-if [ -f "$CONFIG_FILE" ]; then
-  tunnels_from_config="$(
-    jq -r '
-      [
-        .webhook.cloudflare.tunnelName?,
-        (.projects[]?.cloudflare.tunnelName?)
-      ]
-      | map(select(. != null and . != ""))
-      | unique[]
-      | .[]
-    ' "$CONFIG_FILE" 2>/dev/null || true
-  )"
-
-  if [ -n "$tunnels_from_config" ]; then
-    echo
-    echo "[Cloudflare] Tunnels referenced in projects.json:"
-    echo "$tunnels_from_config" | sed 's/^/  - /'
-  else
-    echo "[Cloudflare] No tunnelName entries in projects.json."
-  fi
-else
-  tunnels_from_config=""
-fi
-
 echo
-echo "[Cloudflare] cloudflared tunnel list (if any):"
-if command -v cloudflared >/dev/null 2>&1; then
-  cloudflared tunnel list || true
-else
-  echo "  (cloudflared not installed)"
-fi
 
-# Проверим наличие config-<tunnel>.yml и systemd-юнитов
-if [ -n "$tunnels_from_config" ]; then
+echo "== Listening TCP ports (filtered by webhook port) =="
+if command -v ss >/dev/null 2>&1; then
+  ss -tln 2>/dev/null | awk "NR==1 || /:${WEBHOOK_PORT} /"
+else
+  echo "[WARN] 'ss' not available."
+fi
+echo
+
+echo "== Systemd services status =="
+
+# webhook-deploy.service
+if command -v systemctl >/dev/null 2>&1; then
+  echo "[status] webhook-deploy.service:"
+  if systemctl list-unit-files | grep -q '^webhook-deploy.service'; then
+    ACTIVE=$(systemctl is-active webhook-deploy.service || echo "unknown")
+    ENABLED=$(systemctl is-enabled webhook-deploy.service 2>/dev/null || echo "unknown")
+    echo "  active : $ACTIVE"
+    echo "  enabled: $ENABLED"
+    echo "  last log (journalctl -u webhook-deploy -n 3):"
+    journalctl -u webhook-deploy.service -n 3 --no-pager 2>/dev/null || echo "    (no logs)"
+  else
+    echo "  (service not defined)"
+  fi
   echo
-  echo "[Cloudflare] Per-tunnel config & services:"
-  for TUN_NAME in $tunnels_from_config; do
-    CFG_YML="$CF_DIR/config-${TUN_NAME}.yml"
-    UNIT="cloudflared-${TUN_NAME}.service"
 
-    if [ -f "$CFG_YML" ]; then
-      echo "  [OK]  config-${TUN_NAME}.yml present: $CFG_YML"
-    else
-      echo "  [WARN] config-${TUN_NAME}.yml missing in $CF_DIR"
-    fi
-
-    if systemctl list-unit-files "$UNIT" >/dev/null 2>&1; then
-      STATE="$(systemctl is-enabled "$UNIT" 2>/dev/null || echo "disabled")"
-      ACTIVE="$(systemctl is-active "$UNIT" 2>/dev/null || echo "inactive")"
-      echo "  [UNIT] ${UNIT}: enabled=${STATE}, active=${ACTIVE}"
-    else
-      echo "  [UNIT] ${UNIT} not defined."
-    fi
-  done
+  echo "[status] cloudflared-*.service:"
+  CF_UNITS=$(systemctl list-units 'cloudflared-*.service' --no-legend 2>/dev/null || true)
+  if [ -z "$CF_UNITS" ]; then
+    echo "  No active cloudflared-* units."
+  else
+    echo "$CF_UNITS" | awk '{printf "  %-30s %s\n", $1, $3}'
+  fi
+else
+  echo "[WARN] systemctl not available, skipping services status."
 fi
 
 echo
