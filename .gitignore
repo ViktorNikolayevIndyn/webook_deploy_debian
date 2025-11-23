@@ -1,6 +1,4 @@
 
-/config/projects.json
-/config/env_bootstrap.json
-/config/ssh_state.json
-/config/projects_state.json
-test/
+/config/*
+/config/
+/test/
