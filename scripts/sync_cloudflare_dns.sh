@@ -14,13 +14,15 @@ echo "[cf-dns] CONFIG_DIR  = $CONFIG_DIR"
 echo "[cf-dns] CONFIG_FILE = $CONFIG_FILE"
 echo
 
+# --- basic checks ---
 if [ ! -f "$CONFIG_FILE" ]; then
-  echo "[cf-dns] ERROR: projects.json not found at $CONFIG_FILE"
+  echo "[cf-dns] ERROR: config file not found: $CONFIG_FILE"
   exit 1
 fi
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "[cf-dns] ERROR: cloudflared not found in PATH."
+  echo "          Install it first (scripts/register_cloudflare.sh) and try again."
   exit 1
 fi
 
@@ -29,147 +31,103 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-# Cloudflare API creds из переменных окружения
-CF_API_TOKEN="${CF_API_TOKEN:-}"
-CF_ZONE_ID="${CF_ZONE_ID:-}"
-
-if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ZONE_ID" ]; then
-  echo "[cf-dns] WARNING: CF_API_TOKEN или CF_ZONE_ID не заданы."
-  echo "          DNS записи не будут создаваться, только будет показано что нужно создать."
-  DO_APPLY=0
-else
-  DO_APPLY=1
+CLOUDFLARED_DIR="/root/.cloudflared"
+if [ ! -d "$CLOUDFLARED_DIR" ]; then
+  echo "[cf-dns] ERROR: $CLOUDFLARED_DIR not found. Did you run cloudflared tunnel login/create?"
+  exit 1
 fi
 
-echo "[cf-dns] Detected files in /root/.cloudflared:"
-ls -1 /root/.cloudflared 2>/dev/null || true
+echo "[cf-dns] Detected files in $CLOUDFLARED_DIR:"
+ls -1 "$CLOUDFLARED_DIR"
 echo
 
-# Собираем список tunnelName из конфига
-mapfile -t TUNNELS < <(jq -r '
+# --- collect tunnel names from config (projects + webhook) ---
+TUNNELS_JSON=$(jq -r '
   [
-    .webhook.cloudflare.tunnelName? ,
-    (.projects[]?.cloudflare.tunnelName?)
+    (.projects[]? | .cloudflare? | select(.enabled == true) | .tunnelName),
+    (.webhook.cloudflare? | select(.enabled == true) | .tunnelName)
   ]
   | map(select(. != null and . != ""))
-  | unique[]
+  | unique
 ' "$CONFIG_FILE")
 
-if [ "${#TUNNELS[@]}" -eq 0 ]; then
-  echo "[cf-dns] No tunnelName entries found in config."
+if [ "$TUNNELS_JSON" = "[]" ]; then
+  echo "[cf-dns] No tunnelName values found in config (projects + webhook). Nothing to do."
   exit 0
 fi
 
 echo "[cf-dns] Tunnels found in config:"
-printf "  - %s\n" "${TUNNELS[@]}"
+echo "$TUNNELS_JSON" | jq -r '.[] | "  - " + .'
 echo
 
-# Helper: Cloudflare API call (создать/обновить CNAME)
-cf_upsert_cname() {
-  local name="$1"   # dev.linkify.cloud
-  local target="$2" # <uuid>.cfargotunnel.com
-
-  if [ "$DO_APPLY" -ne 1 ]; then
-    echo "[cf-dns] (dry-run) CNAME $name -> $target (proxied=true)"
-    return 0
-  fi
-
-  # Ищем существующую запись
-  local resp id
-  resp="$(
-    curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${name}" \
-      -H "Authorization: Bearer ${CF_API_TOKEN}" \
-      -H "Content-Type: application/json"
-  )"
-
-  id="$(echo "$resp" | jq -r '.result[0].id // empty')"
-
-  if [ -n "$id" ]; then
-    echo "[cf-dns] Updating existing CNAME $name -> $target (id=$id)..."
-    curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${id}" \
-      -H "Authorization: Bearer ${CF_API_TOKEN}" \
-      -H "Content-Type: application/json" \
-      --data @- <<EOF >/dev/null
-{
-  "type": "CNAME",
-  "name": "${name}",
-  "content": "${target}",
-  "ttl": 1,
-  "proxied": true
-}
-EOF
-  else
-    echo "[cf-dns] Creating CNAME $name -> $target ..."
-    curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-      -H "Authorization: Bearer ${CF_API_TOKEN}" \
-      -H "Content-Type: application/json" \
-      --data @- <<EOF >/dev/null
-{
-  "type": "CNAME",
-  "name": "${name}",
-  "content": "${target}",
-  "ttl": 1,
-  "proxied": true
-}
-EOF
-  fi
+# --- helper: get tunnel id from cloudflared ---
+get_tunnel_id() {
+  local tunnelName="$1"
+  cloudflared tunnel list --output json 2>/dev/null \
+    | jq -r --arg name "$tunnelName" '.[] | select(.name == $name) | .id' \
+    | head -n 1
 }
 
-# Для каждого tunnelName: находим его ID через cloudflared tunnel list
-for TUN_NAME in "${TUNNELS[@]}"; do
-  echo "[cf-dns] === Processing tunnelName='${TUN_NAME}' ==="
+# --- main loop over tunnels ---
+for tunnelName in $(echo "$TUNNELS_JSON" | jq -r '.[]'); do
+  echo "[cf-dns] === Processing tunnelName='$tunnelName' ==="
 
-  # Получаем список туннелей в JSON
-  TUN_JSON="$(cloudflared tunnel list --output json 2>/dev/null || true)"
-
-  if [ -z "$TUN_JSON" ] || [ "$TUN_JSON" = "null" ]; then
-    echo "[cf-dns]   ERROR: cloudflared tunnel list returned empty/null; is cert.pem configured?"
+  # find tunnel id (for info only)
+  tunnel_id="$(get_tunnel_id "$tunnelName")"
+  if [ -z "$tunnel_id" ] || [ "$tunnel_id" = "null" ]; then
+    echo "[cf-dns] WARNING: Tunnel '$tunnelName' not found in 'cloudflared tunnel list'."
+    echo "          Make sure you created it with: cloudflared tunnel create $tunnelName"
     echo
     continue
   fi
 
-  TUN_ID="$(echo "$TUN_JSON" | jq -r ".[] | select(.name == \"${TUN_NAME}\") | .id" || true)"
-
-  if [ -z "$TUN_ID" ] || [ "$TUN_ID" = "null" ]; then
-    echo "[cf-dns]   ERROR: tunnel with name '${TUN_NAME}' not found in cloudflared tunnel list."
-    echo "           Run: cloudflared tunnel create ${TUN_NAME}"
-    echo
-    continue
-  fi
-
-  TARGET="${TUN_ID}.cfargotunnel.com"
-  echo "[cf-dns]   Found tunnel ID: ${TUN_ID}"
-  echo "[cf-dns]   CNAME target:   ${TARGET}"
+  cname_target="${tunnel_id}.cfargotunnel.com"
+  echo "[cf-dns]   Found tunnel ID: $tunnel_id"
+  echo "[cf-dns]   CNAME target:   $cname_target"
   echo
 
-  # Собираем все хосты (webhook + projects), которые используют этот tunnelName
-  mapfile -t HOSTS < <(jq -r --arg tn "$TUN_NAME" '
-    [
-      (if .webhook and .webhook.cloudflare and .webhook.cloudflare.tunnelName == $tn then
-         (.webhook.cloudflare.subdomain + "." + .webhook.cloudflare.rootDomain)
-       else empty end),
-      (.projects[]? | select(.cloudflare.tunnelName == $tn)
-        | (.cloudflare.subdomain + "." + .cloudflare.rootDomain))
-    ]
-    | map(select(. != null and . != ""))
-    | unique[]
-  ' "$CONFIG_FILE")
+  # collect hosts for this tunnel from projects
+  HOSTS_PROJECTS=$(jq -r --arg t "$tunnelName" '
+    .projects[]?
+    | select(.cloudflare.enabled == true and .cloudflare.tunnelName == $t)
+    | "\(.cloudflare.subdomain).\(.cloudflare.rootDomain)"
+  ' "$CONFIG_FILE" | sort -u)
 
-  if [ "${#HOSTS[@]}" -eq 0 ]; then
-    echo "[cf-dns]   No hosts using tunnelName='${TUN_NAME}' in projects.json."
+  # collect webhook host for this tunnel (если включен и tunnelName совпадает или пустой)
+  HOSTS_WEBHOOK=$(jq -r --arg t "$tunnelName" '
+    .webhook.cloudflare?
+    | select(.enabled == true and (.tunnelName == $t or .tunnelName == null or .tunnelName == ""))
+    | "\(.subdomain).\(.rootDomain)"
+  ' "$CONFIG_FILE" 2>/dev/null || true)
+
+  # merge hosts + uniq
+  HOSTS_ALL=$(printf "%s\n%s\n" "$HOSTS_PROJECTS" "$HOSTS_WEBHOOK" \
+    | sed '/^$/d' \
+    | sort -u)
+
+  if [ -z "$HOSTS_ALL" ]; then
+    echo "[cf-dns]   No hosts found in config for tunnel '$tunnelName'. Skipping."
     echo
     continue
   fi
 
   echo "[cf-dns]   Hosts for this tunnel:"
-  printf "      - %s\n" "${HOSTS[@]}"
+  echo "$HOSTS_ALL" | sed 's/^/      - /'
   echo
 
-  # Обновляем/создаём CNAME для каждого хоста
-  for HOST in "${HOSTS[@]}"; do
-    cf_upsert_cname "$HOST" "$TARGET"
-  done
+  # create/update DNS via cloudflared tunnel route dns
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    echo "[cf-dns]   Running: cloudflared tunnel route dns $tunnelName $host"
+    if cloudflared tunnel route dns "$tunnelName" "$host"; then
+      echo "[cf-dns]   OK: DNS route ensured for $host"
+    else
+      echo "[cf-dns]   ERROR: failed to route DNS for $host"
+    fi
+    echo
+  done <<< "$HOSTS_ALL"
 
+  echo "[cf-dns] === Done for tunnelName='$tunnelName' ==="
   echo
 done
 
