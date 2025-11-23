@@ -1,142 +1,148 @@
 #!/bin/bash
 set -e
 
-echo "=== install.sh ==="
+echo "=== sync_cloudflare_dns.sh ==="
 
-if [ "$EUID" -ne 0 ]; then
-  echo "[install] This script must be run as root."
+# ROOT_DIR = /opt/webook_deploy_debian
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR/scripts"
+CONFIG_DIR="$ROOT_DIR/config"
+CONFIG_FILE="$CONFIG_DIR/projects.json"
+
+echo "[dns] ROOT_DIR    = $ROOT_DIR"
+echo "[dns] SCRIPT_DIR  = $SCRIPT_DIR"
+echo "[dns] CONFIG_DIR  = $CONFIG_DIR"
+echo "[dns] CONFIG_FILE = $CONFIG_FILE"
+echo
+
+# --- helpers ---
+
+need_bin() {
+  local bin="$1"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "[dns] ERROR: '$bin' not found in PATH. Aborting."
+    exit 1
+  fi
+}
+
+# --- checks ---
+
+need_bin cloudflared
+need_bin jq
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[dns] ERROR: config file not found: $CONFIG_FILE"
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
-SCRIPT_DIR="$ROOT_DIR/scripts"
-CONFIG_DIR="$ROOT_DIR/config"
+CF_DIR="/root/.cloudflared"
+CERT="$CF_DIR/cert.pem"
 
-echo "[install] ROOT_DIR   = $ROOT_DIR"
-echo "[install] SCRIPT_DIR = $SCRIPT_DIR"
-echo "[install] CONFIG_DIR = $CONFIG_DIR"
+if [ ! -f "$CERT" ]; then
+  echo "[dns] ERROR: $CERT not found."
+  echo "[dns] You must run on this host (once):"
+  echo "       cloudflared tunnel login"
+  echo "     and choose the correct zone in the browser."
+  exit 1
+fi
+
+echo "[dns] Using Cloudflare credentials: $CERT"
 echo
 
-mkdir -p "$CONFIG_DIR"
+# базовый tunnelName из webhook (если у проектов пусто)
+BASE_TUNNEL_NAME="$(jq -r '.webhook.cloudflare.tunnelName // ""' "$CONFIG_FILE")"
 
-ask_yes_no_default_yes() {
-  local msg="$1"
-  local ans
-  read -r -p "$msg [Y/n]: " ans
-  ans="${ans:-Y}"
-  case "$ans" in
-    n|N) return 1 ;;
-    *)   return 0 ;;
-  esac
-}
+if [ -z "$BASE_TUNNEL_NAME" ] || [ "$BASE_TUNNEL_NAME" = "null" ]; then
+  echo "[dns] WARNING: webhook.cloudflare.tunnelName is empty – projects must have their own tunnelName."
+fi
 
-ask_yes_no_default_no() {
-  local msg="$1"
-  local ans
-  read -r -p "$msg [y/N]: " ans
-  ans="${ans:-N}"
-  case "$ans" in
-    y|Y) return 0 ;;
-    *)   return 1 ;;
-  esac
-}
+echo "[dns] Collecting hostnames from projects.json ..."
+echo
 
-if [ -d "$SCRIPT_DIR" ]; then
-  echo "[install] Making all scripts in $SCRIPT_DIR executable..."
-  find "$SCRIPT_DIR" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} \;
-  echo "[install] chmod +x done."
+# формируем список: "tunnelName hostname"
+# если у проекта tunnelName пустой → подставляем BASE_TUNNEL_NAME
+HOST_LINES=$(jq -r --arg base_tunnel "$BASE_TUNNEL_NAME" '
+  [
+    # webhook hostname
+    (
+      if .webhook and .webhook.cloudflare
+         and (.webhook.cloudflare.subdomain != null)
+         and (.webhook.cloudflare.rootDomain != null)
+      then
+        {
+          tunnel: (.webhook.cloudflare.tunnelName // $base_tunnel),
+          host: (.webhook.cloudflare.subdomain + "." + .webhook.cloudflare.rootDomain)
+        }
+      else empty end
+    )
+    +
+    # project hostnames
+    (
+      .projects[]? |
+      select(.cloudflare.subdomain != null and .cloudflare.rootDomain != null) |
+      {
+        tunnel: ( .cloudflare.tunnelName // $base_tunnel ),
+        host: (.cloudflare.subdomain + "." + .cloudflare.rootDomain)
+      }
+    )
+  ]
+  # уникальные по host
+  | unique_by(.host)
+  | .[]
+  | (.tunnel // "") + " " + .host
+' "$CONFIG_FILE")
+
+if [ -z "$HOST_LINES" ]; then
+  echo "[dns] No hostnames found in config – nothing to sync."
+  exit 0
+fi
+
+echo "[dns] Planned DNS routes:"
+echo "$HOST_LINES" | while read -r line; do
+  t=$(echo "$line" | awk '{print $1}')
+  h=$(echo "$line" | awk '{print $2}')
+  printf "  tunnel=%-20s host=%s\n" "${t:-<EMPTY>}" "$h"
+done
+echo
+
+read -r -p "[dns] Apply these DNS routes with 'cloudflared tunnel route dns'? [Y/n]: " ans
+ans=${ans:-Y}
+if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+  echo "[dns] Aborted by user."
+  exit 0
+fi
+
+echo
+echo "[dns] Applying DNS routes..."
+echo
+
+FAILED=0
+
+echo "$HOST_LINES" | while read -r line; do
+  t=$(echo "$line" | awk '{print $1}')
+  h=$(echo "$line" | awk '{print $2}')
+
+  if [ -z "$t" ] || [ "$t" = "null" ]; then
+    echo "[dns] SKIP: host=$h has empty tunnelName (no BASE_TUNNEL too?)."
+    FAILED=1
+    continue
+  fi
+
+  echo "[dns] Running: cloudflared tunnel route dns '$t' '$h'"
+  if cloudflared tunnel route dns "$t" "$h"; then
+    echo "[dns] OK: $h → tunnel=$t"
+  else
+    echo "[dns] ERROR: failed for host=$h, tunnel=$t"
+    FAILED=1
+  fi
   echo
+done
+
+echo "[dns] DNS route sync finished."
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "[dns] Some entries failed – check messages above."
+  exit 1
 fi
 
-# 1) env-bootstrap (умgebung)
-if [ -x "$SCRIPT_DIR/env-bootstrap.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run env-bootstrap.sh (packages, Docker install)?"; then
-    "$SCRIPT_DIR/env-bootstrap.sh"
-  else
-    echo "[install] Skipping env-bootstrap.sh."
-  fi
-else
-  echo "[install] WARNING: $SCRIPT_DIR/env-bootstrap.sh not found or not executable. Skipping env bootstrap."
-fi
-echo
-
-# 2) enable_ssh
-if [ -x "$SCRIPT_DIR/enable_ssh.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run enable_ssh.sh (SSH user / sudo / docker group)?"; then
-    "$SCRIPT_DIR/enable_ssh.sh"
-  else
-    echo "[install] Skipping enable_ssh.sh."
-  fi
-else
-  echo "[install] WARNING: $SCRIPT_DIR/enable_ssh.sh not found or not executable. Skipping SSH setup."
-fi
-echo
-
-# 3) init.sh (webhook + projects.json)
-if [ -x "$SCRIPT_DIR/init.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run init.sh (configure webhook + projects)?"; then
-    "$SCRIPT_DIR/init.sh"
-  else
-    echo "[install] Skipping init.sh."
-  fi
-else
-  echo "[install] WARNING: $SCRIPT_DIR/init.sh not found or not executable. Skipping init.sh."
-fi
-echo
-
-echo "[install] Base installation phase finished."
-echo "         Config dir: $CONFIG_DIR"
-echo "         You can inspect config/projects.json if needed."
-echo
-
-# 4) deploy_config.sh (деплой проектов + запуск webhook.js)
-if [ -x "$SCRIPT_DIR/deploy_config.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run deploy_config.sh now (deploy projects & start webhook)?"; then
-    echo "[install] Starting deploy_config.sh..."
-    "$SCRIPT_DIR/deploy_config.sh"
-  else
-    echo "[install] Skipping deploy_config.sh."
-  fi
-else
-  echo "[install] NOTE: scripts/deploy_config.sh not found yet."
-  echo "       Once you add it, you can run: $SCRIPT_DIR/deploy_config.sh"
-fi
-
-echo
-
-# 5) sync_cloudflare.sh (туннели + systemd)
-if [ -x "$SCRIPT_DIR/sync_cloudflare.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run sync_cloudflare.sh now (tunnels + systemd units)?"; then
-    echo "[install] Starting sync_cloudflare.sh..."
-    "$SCRIPT_DIR/sync_cloudflare.sh"
-  else
-    echo "[install] Skipping sync_cloudflare.sh."
-  fi
-else
-  echo "[install] NOTE: scripts/sync_cloudflare.sh not found. Cloudflare tunnels not auto-synced."
-fi
-
-echo
-
-# 6) sync_cloudflare_dns.sh (DNS маршруты)
-if [ -x "$SCRIPT_DIR/sync_cloudflare_dns.sh" ]; then
-  if ask_yes_no_default_yes "[install] Run sync_cloudflare_dns.sh now (Cloudflare DNS routes)?"; then
-    echo "[install] Starting sync_cloudflare_dns.sh..."
-    "$SCRIPT_DIR/sync_cloudflare_dns.sh"
-  else
-    echo "[install] Skipping sync_cloudflare_dns.sh."
-  fi
-else
-  echo "[install] NOTE: scripts/sync_cloudflare_dns.sh not found. DNS routes not auto-synced."
-fi
-
-echo
-echo "[install] Final environment check (check_env.sh)..."
-if [ -x "$SCRIPT_DIR/check_env.sh" ]; then
-  "$SCRIPT_DIR/check_env.sh"
-else
-  echo "[install] WARNING: check_env.sh not found."
-fi
-
-echo
-echo "=== install.sh finished ==="
+echo "=== sync_cloudflare_dns.sh finished ==="
