@@ -108,20 +108,23 @@ ensure_deploy_script() {
 
   if [ ! -f "$deployScript" ]; then
     if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
-      echo "[deploy] deploy.sh not found for '$name', creating from template..."
+      echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
       cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
       chmod +x "$deployScript"
     else
-      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing."
+      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
       return 1
     fi
   else
     chmod +x "$deployScript"
   fi
 
-  echo "[deploy] Using deploy script: $deployScript"
-  echo "$deployScript"
+  # Лог только в stderr
+  echo "[deploy] Using deploy script: $deployScript" >&2
+  # В stdout — ТОЛЬКО путь, чтобы его можно было безопасно поймать через $(...)
+  printf '%s\n' "$deployScript"
 }
+
 
 # --- helper: run deploy.sh with args ---
 run_deploy() {
