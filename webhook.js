@@ -1,100 +1,142 @@
-#!/usr/bin/env node
-
-/**
- * webhook.js
- * GitHub Webhook → автодеплой по config/projects.json
- *
- * НИЧЕГО не устанавливает, только:
- *  - слушает HTTP webhook
- *  - проверяет подпись (если задан secret)
- *  - по событию push дергает deployScript для подходящих проектов
- */
+// webhook.js
+// Лёгкий GitHub webhook → deploy runner
+// - читает config/projects.json
+// - проверяет секрет (X-Hub-Signature-256), если задан
+// - на push по нужной ветке запускает deploy.sh напрямую
 
 const http = require("http");
 const crypto = require("crypto");
-const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 
-// ---------- Загрузка конфига ----------
+const CONFIG_PATH = path.join(__dirname, "config", "projects.json");
 
-const ROOT_DIR = path.resolve(__dirname);
-const CONFIG_DIR = path.join(ROOT_DIR, "config");
-const CONFIG_FILE = path.join(CONFIG_DIR, "projects.json");
+let config = null;
 
 function loadConfig() {
-  if (!fs.existsSync(CONFIG_FILE)) {
-    console.error(`[config] Config file not found: ${CONFIG_FILE}`);
-    process.exit(1);
-  }
-
   try {
-    const raw = fs.readFileSync(CONFIG_FILE, "utf8");
-    const cfg = JSON.parse(raw);
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    config = JSON.parse(raw);
     console.log("[config] Loaded projects.json");
-    return cfg;
-  } catch (e) {
-    console.error("[config] Failed to parse projects.json:", e.message);
+  } catch (err) {
+    console.error("[config] Failed to parse projects.json:", err.message);
     process.exit(1);
   }
 }
 
-// Первый загруз конфига
-let CONFIG = loadConfig();
+loadConfig();
 
-// ---------- Хелперы ----------
+const webhookCfg = (config && config.webhook) || {};
+const webhookPort = webhookCfg.port || 4000;
+const webhookPath = (webhookCfg.path || "/github").replace(/\/+$/, "") || "/github";
+const webhookSecret =
+  webhookCfg.secret && String(webhookCfg.secret).trim().length > 0
+    ? String(webhookCfg.secret).trim()
+    : null;
 
-function verifySignature(secret, payload, signature) {
-  // Если secret пустой → подпись не проверяем
-  if (!secret) {
-    console.warn("[verify] No secret configured, skipping signature check.");
+function verifySignature(req, rawBody) {
+  if (!webhookSecret) {
+    console.log("[verify] No secret configured, skipping signature check.");
     return true;
   }
 
-  if (!signature || typeof signature !== "string") {
-    console.warn("[verify] Missing X-Hub-Signature-256 header.");
+  const sig = req.headers["x-hub-signature-256"];
+  if (!sig || !sig.startsWith("sha256=")) {
+    console.warn("[verify] Missing or invalid X-Hub-Signature-256 header.");
     return false;
   }
 
-  const hmac = crypto.createHmac("sha256", secret);
-  const digest = "sha256=" + hmac.update(payload).digest("hex");
+  const their = sig.slice("sha256=".length).trim();
+  const hmac = crypto.createHmac("sha256", webhookSecret);
+  hmac.update(rawBody);
+  const ours = hmac.digest("hex");
 
-  const sigBuf = Buffer.from(signature);
-  const digBuf = Buffer.from(digest);
+  const ok = crypto.timingSafeEqual(
+    Buffer.from(ours, "hex"),
+    Buffer.from(their, "hex")
+  );
 
-  if (sigBuf.length !== digBuf.length) {
-    return false;
+  if (!ok) {
+    console.warn("[verify] Signature mismatch.");
   }
-
-  return crypto.timingSafeEqual(sigBuf, digBuf);
+  return ok;
 }
 
-function runDeploy(project, ref) {
-  const name = project.name || "<unnamed>";
-  const script = project.deployScript;
-  const args = project.deployArgs || [];
+function matchProjectsByPayload(payload) {
+  if (!config || !Array.isArray(config.projects)) return [];
 
-  if (!script) {
-    console.warn(`[deploy] Project '${name}' has no deployScript. Skipping.`);
-    return;
+  const repoFull = payload?.repository?.full_name || "";
+  const ref = payload?.ref || "";
+  const event = payload?.event || "push";
+
+  const matches = [];
+
+  for (const p of config.projects) {
+    // repo / gitUrl
+    const projRepo = p.repo || "";
+    const projGit = p.gitUrl || "";
+
+    let repoMatch = false;
+
+    if (projRepo && repoFull && projRepo === repoFull) {
+      repoMatch = true;
+    } else if (
+      projRepo &&
+      repoFull &&
+      repoFull.toLowerCase().endsWith("/" + projRepo.split("/").pop())
+    ) {
+      repoMatch = true;
+    } else if (
+      projGit &&
+      repoFull &&
+      projGit.toLowerCase().includes(repoFull.toLowerCase().split("/").pop())
+    ) {
+      repoMatch = true;
+    }
+
+    if (!repoMatch) continue;
+
+    // ветка
+    if (p.branch) {
+      const expectedRef = `refs/heads/${p.branch}`;
+      if (ref !== expectedRef) {
+        continue;
+      }
+    }
+
+    matches.push(p);
   }
 
+  return matches;
+}
+
+function runDeployForProject(project, ref) {
+  const name = project.name || "noname";
+  const workDir = project.workDir || process.cwd();
+  const deployScript = project.deployScript || path.join(workDir, "deploy.sh");
+  const deployArgs = Array.isArray(project.deployArgs)
+    ? project.deployArgs
+    : [];
+
   console.log(
-    `[deploy] Starting deploy for '${name}' (ref=${ref || "n/a"}) via: ${script} ${args.join(
+    `[deploy] Starting deploy for '${name}' (ref=${ref}) via: ${deployScript} ${deployArgs.join(
       " "
     )}`
   );
 
-  const child = spawn(script, args, {
-    cwd: project.workDir || ROOT_DIR,
-    stdio: "inherit",
-    shell: true,
+  // ВАЖНО: запускаем СКРИПТ НАПРЯМУЮ, без /bin/sh
+  const child = spawn(deployScript, deployArgs, {
+    cwd: workDir,
+    env: process.env,
   });
 
-  child.on("exit", (code) => {
-    console.log(
-      `[deploy] Deploy for '${name}' finished with exit code ${code}`
-    );
+  child.stdout.on("data", (data) => {
+    process.stdout.write(`[deploy][${name}][stdout] ${data}`);
+  });
+
+  child.stderr.on("data", (data) => {
+    process.stderr.write(`[deploy][${name}][stderr] ${data}`);
   });
 
   child.on("error", (err) => {
@@ -103,119 +145,88 @@ function runDeploy(project, ref) {
       err.message
     );
   });
+
+  child.on("close", (code) => {
+    console.log(
+      `[deploy] Deploy process for '${name}' exited with code ${code}`
+    );
+  });
 }
 
-// ---------- HTTP server (GitHub webhook) ----------
+const server = http.createServer((req, res) => {
+  const urlPath = req.url.split("?")[0].replace(/\/+$/, "") || "/";
+  if (req.method !== "POST" || urlPath !== webhookPath) {
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not found\n");
+    return;
+  }
 
-function createServer() {
-  // На старте освежаем конфиг
-  CONFIG = loadConfig();
+  const event = req.headers["x-github-event"] || "unknown";
+  const delivery = req.headers["x-github-delivery"] || "n/a";
 
-  const webhookCfg = CONFIG.webhook || {};
-  const port = webhookCfg.port || 4000;
-  const pathExpected = webhookCfg.path || "/github";
-  const secret = webhookCfg.secret || "";
+  console.log(
+    `[webhook] Incoming request: event=${event}, delivery=${delivery}, path=${urlPath}`
+  );
 
-  const server = http.createServer((req, res) => {
-    if (req.url !== pathExpected || req.method !== "POST") {
-      res.statusCode = 404;
-      return res.end("Not found");
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => {
+    const rawBody = Buffer.concat(chunks);
+    const bodyStr = rawBody.toString("utf8") || "{}";
+
+    if (!verifySignature(req, rawBody)) {
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("Invalid signature\n");
+      return;
     }
 
-    const sig = req.headers["x-hub-signature-256"];
-    const event = req.headers["x-github-event"];
-    const delivery = req.headers["x-github-delivery"];
+    let payload;
+    try {
+      payload = JSON.parse(bodyStr);
+    } catch (err) {
+      console.error("[webhook] Failed to parse JSON payload:", err.message);
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Invalid JSON\n");
+      return;
+    }
+
+    const repoFull = payload?.repository?.full_name || "n/a";
+    const ref = payload?.ref || "n/a";
 
     console.log(
-      `[webhook] Incoming request: event=${event}, delivery=${delivery}, path=${req.url}`
+      `[webhook] Payload: repo=${repoFull}, ref=${ref}, event=${event}`
     );
 
-    let body = [];
-    req
-      .on("data", (chunk) => {
-        body.push(chunk);
-      })
-      .on("end", () => {
-        body = Buffer.concat(body);
-        const payloadString = body.toString("utf8");
+    if (event !== "push") {
+      console.log("[webhook] Non-push event, ignoring.");
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("Ignored (non-push)\n");
+      return;
+    }
 
-        // Проверка подписи
-        if (!verifySignature(secret, payloadString, sig)) {
-          console.warn("[webhook] Signature verification FAILED. Ignoring.");
-          res.statusCode = 401;
-          return res.end("Invalid signature");
-        }
-
-        let payload;
-        try {
-          payload = JSON.parse(payloadString);
-        } catch (e) {
-          console.error("[webhook] Failed to parse JSON payload:", e.message);
-          res.statusCode = 400;
-          return res.end("Invalid JSON");
-        }
-
-        const repoFullName =
-          payload.repository && payload.repository.full_name
-            ? payload.repository.full_name
-            : "";
-        const ref = payload.ref || "";
-
-        console.log(
-          `[webhook] Payload: repo=${repoFullName}, ref=${ref}, event=${event}`
-        );
-
-        if (event === "ping") {
-          console.log("[webhook] ping event – OK");
-          res.statusCode = 200;
-          return res.end("pong");
-        }
-
-        if (event !== "push") {
-          console.log("[webhook] Not a push event. Ignoring.");
-          res.statusCode = 200;
-          return res.end("ignored");
-        }
-
-        const projects = CONFIG.projects || [];
-        let matched = 0;
-
-        for (const project of projects) {
-          if (!project.repo || !project.branch) continue;
-
-          const repoMatch = project.repo === repoFullName;
-          const refMatch = ref === `refs/heads/${project.branch}`;
-
-          if (repoMatch && refMatch) {
-            matched += 1;
-            runDeploy(project, ref);
-          }
-        }
-
-        console.log(`[webhook] Matched projects: ${matched}`);
-        res.statusCode = 200;
-        res.end(`ok, matched=${matched}`);
-      })
-      .on("error", (err) => {
-        console.error("[webhook] Request error:", err.message);
-        res.statusCode = 500;
-        res.end("error");
-      });
-  });
-
-  server.listen(port, () => {
+    const matchedProjects = matchProjectsByPayload(payload);
     console.log(
-      `[webhook] Listening on port ${port}, path=${pathExpected}, config=${CONFIG_FILE}`
+      `[webhook] Matched projects: ${matchedProjects.length}`
     );
+
+    if (matchedProjects.length === 0) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("No matching projects\n");
+      return;
+    }
+
+    // отвечаем сразу, деплой — в фоне
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("OK\n");
+
+    for (const p of matchedProjects) {
+      runDeployForProject(p, ref);
+    }
   });
+});
 
-  server.on("error", (err) => {
-    console.error("[webhook] Server error:", err.message);
-  });
-
-  return server;
-}
-
-// ---------- START ----------
-
-createServer();
+server.listen(webhookPort, () => {
+  console.log(
+    `[webhook] Listening on port ${webhookPort}, path=${webhookPath}, config=${CONFIG_PATH}`
+  );
+});
