@@ -8,190 +8,157 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 
-CF_DIR="/root/.cloudflared"
-
-echo "[cf-sync] ROOT_DIR     = $ROOT_DIR"
-echo "[cf-sync] SCRIPT_DIR   = $SCRIPT_DIR"
-echo "[cf-sync] CONFIG_DIR   = $CONFIG_DIR"
-echo "[cf-sync] CONFIG_FILE  = $CONFIG_FILE"
-echo "[cf-sync] CF_DIR       = $CF_DIR"
+echo "[cf] ROOT_DIR    = $ROOT_DIR"
+echo "[cf] SCRIPT_DIR  = $SCRIPT_DIR"
+echo "[cf] CONFIG_DIR  = $CONFIG_DIR"
+echo "[cf] CONFIG_FILE = $CONFIG_FILE"
 echo
-
-# ---------- helpers ----------
 
 need_bin() {
   local bin="$1"
   if ! command -v "$bin" >/dev/null 2>&1; then
-    echo "[cf-sync] ERROR: '$bin' not found in PATH. Aborting."
+    echo "[cf] ERROR: '$bin' not found in PATH. Aborting."
     exit 1
   fi
 }
 
-ensure_config() {
-  if [ ! -f "$CONFIG_FILE" ]; then
-    echo "[cf-sync] ERROR: config file not found: $CONFIG_FILE"
-    echo "           Run ./scripts/init.sh first."
-    exit 1
-  fi
-}
-
-get_tunnel_id_by_name() {
-  local name="$1"
-  cloudflared tunnel list --output json 2>/dev/null \
-    | jq -r --arg NAME "$name" '
-        .[]? | select(.name == $NAME) | .id
-      ' \
-    | head -n1
-}
-
-mkdir -p "$CF_DIR"
-
-need_bin cloudflared
 need_bin jq
-ensure_config
+need_bin cloudflared
 
-# ---------- собираем все сервисы из config/projects.json ----------
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[cf] ERROR: Config file not found: $CONFIG_FILE"
+  exit 1
+fi
 
-echo "[cf-sync] Building services list from projects.json ..."
-services_json="$(
-  jq -c '
-    [
-      # webhook как отдельный сервис
-      if .webhook and .webhook.cloudflare and (.webhook.cloudflare.tunnelName // "") != "" then
-        {
-          kind:       "webhook",
-          tunnelName: .webhook.cloudflare.tunnelName,
-          rootDomain: .webhook.cloudflare.rootDomain,
-          subdomain:  .webhook.cloudflare.subdomain,
-          port:       .webhook.cloudflare.localPort,
-          protocol:   (.webhook.cloudflare.protocol // "http"),
-          localPath:  (.webhook.cloudflare.localPath // "/"),
-          path:       (.webhook.path // "/github")
-        }
-      else
-        empty
-      end,
+# --- Проверяем cert.pem (cloudflared tunnel login уже делали?) ---
+CLOUDFLARE_DIR="${HOME}/.cloudflared"
+CERT_FILE="$CLOUDFLARE_DIR/cert.pem"
 
-      # проекты
-      (
-        .projects[]? |
-        select(.cloudflare != null and (.cloudflare.tunnelName // "") != "") |
-        {
-          kind:       "project",
-          name:       .name,
-          tunnelName: .cloudflare.tunnelName,
-          rootDomain: .cloudflare.rootDomain,
-          subdomain:  .cloudflare.subdomain,
-          port:       .cloudflare.localPort,
-          protocol:   (.cloudflare.protocol // "http"),
-          localPath:  (.cloudflare.localPath // "/"),
-          path:       null
-        }
-      )
-    ]
-  ' "$CONFIG_FILE"
-)"
+if [ ! -f "$CERT_FILE" ]; then
+  echo "[cf] WARNING: $CERT_FILE not found."
+  echo "  Run on this host once:"
+  echo "    cloudflared tunnel login"
+  echo "  Then rerun sync_cloudflare.sh."
+  exit 1
+fi
 
-if [ -z "$services_json" ] || [ "$services_json" = "[]" ]; then
-  echo "[cf-sync] No Cloudflare-enabled services found in config."
-  echo "=== sync_cloudflare.sh finished ==="
+# --- Собираем список всех tunnelName из projects + webhook ---
+
+TUNNELS_JSON=$(jq -r '
+  [
+    .projects[]? | .cloudflare.tunnelName? // empty,
+    .webhook.cloudflare.tunnelName? // empty
+  ]
+  | map(select(. != "")) 
+  | unique
+' "$CONFIG_FILE")
+
+echo "[cf] Tunnels found in config: $TUNNELS_JSON"
+echo
+
+mapfile -t TUNNELS < <(echo "$TUNNELS_JSON" | jq -r '.[]?')
+
+if [ "${#TUNNELS[@]}" -eq 0 ]; then
+  echo "[cf] No tunnelName specified in config. Nothing to do."
   exit 0
 fi
 
-# уникальные имена туннелей
-tunnel_names="$(echo "$services_json" | jq -r '.[].tunnelName' | sort -u)"
-
-echo "[cf-sync] Tunnels in use (from config):"
-echo "$tunnel_names" | sed 's/^/  - /'
+echo "[cf] Detected tunnels in ${CLOUDFLARE_DIR}:"
+ls -1 "$CLOUDFLARE_DIR" || true
 echo
 
-# ---------- цикл по каждому tunnelName ----------
+# --- Helper: собрать правила host -> service для одного туннеля ---
+build_rules_for_tunnel() {
+  local tunnelName="$1"
 
-for TUN_NAME in $tunnel_names; do
-  echo "[cf-sync] === Tunnel '$TUN_NAME' ==="
+  # Правило для webhook (если он использует этот tunnelName)
+  local webhook_rule
+  webhook_rule=$(jq -r --arg T "$tunnelName" '
+    if .webhook
+       and .webhook.cloudflare
+       and .webhook.cloudflare.enabled == true
+       and (.webhook.cloudflare.tunnelName // "") == $T
+    then
+      "\(.webhook.cloudflare.subdomain).\(.webhook.cloudflare.rootDomain) http://127.0.0.1:\(.webhook.cloudflare.localPort)"
+    else
+      ""
+    end
+  ' "$CONFIG_FILE")
 
-  TUN_ID="$(get_tunnel_id_by_name "$TUN_NAME" || true)"
+  # Правила для проектов с этим tunnelName
+  mapfile -t project_rules < <(jq -r --arg T "$tunnelName" '
+    .projects[]?
+    | select(.cloudflare.enabled == true)
+    | select((.cloudflare.tunnelName // "") == $T)
+    | "\(.cloudflare.subdomain).\(.cloudflare.rootDomain) http://127.0.0.1:\(.cloudflare.localPort)"
+  ' "$CONFIG_FILE")
 
-  if [ -z "$TUN_ID" ] || [ "$TUN_ID" = "null" ]; then
-    echo "[cf-sync] ERROR: tunnel '$TUN_NAME' not found in 'cloudflared tunnel list'."
-    echo "          Run ./scripts/register_cloudflare.sh first."
+  # Печатаем в stdout строки "host service"
+  if [ -n "$webhook_rule" ] && [ "$webhook_rule" != "null" ]; then
+    echo "$webhook_rule"
+  fi
+
+  if [ "${#project_rules[@]}" -gt 0 ]; then
+    for r in "${project_rules[@]}"; do
+      [ -n "$r" ] && echo "$r"
+    done
+  fi
+}
+
+# --- Основной цикл по tunnelName ---
+
+for TUN in "${TUNNELS[@]}"; do
+  echo "[cf] === Processing tunnelName='$TUN' ==="
+
+  CREDS_JSON="${CLOUDFLARE_DIR}/${TUN}.json"
+  if [ ! -f "$CREDS_JSON" ]; then
+    echo "[cf] WARNING: credentials JSON not found: $CREDS_JSON"
+    echo "  You probably need to run:"
+    echo "    cloudflared tunnel create ${TUN}"
+    echo "  and then rerun sync_cloudflare.sh."
     echo
     continue
   fi
 
-  CRED_JSON="$CF_DIR/${TUN_ID}.json"
-  if [ ! -f "$CRED_JSON" ]; then
-    echo "[cf-sync] WARNING: credentials JSON not found: $CRED_JSON"
-    echo "          Tunnel may not be runnable on this host."
+  CFG_YML="${CLOUDFLARE_DIR}/config-${TUN}.yml"
+
+  echo "[cf] Building ingress rules for tunnel '${TUN}' ..."
+  mapfile -t RULES < <(build_rules_for_tunnel "$TUN")
+
+  if [ "${#RULES[@]}" -eq 0 ]; then
+    echo "[cf]   No routes found in config for tunnel '${TUN}'. Skipping YAML write."
+    echo
+    continue
   fi
 
-  CFG_YML="$CF_DIR/config-${TUN_NAME}.yml"
-  echo "[cf-sync] Generating config: $CFG_YML"
-  echo "[cf-sync]   tunnel id: $TUN_ID"
-  echo "[cf-sync]   creds    : $CRED_JSON"
+  echo "[cf]   Routes:"
+  for line in "${RULES[@]}"; do
+    echo "    $line"
+  done
 
-  # выбираем сервисы только для этого туннеля
-  group_json="$(echo "$services_json" | jq -c --arg T "$TUN_NAME" '[.[] | select(.tunnelName == $T)]')"
-
-  # webhook-сервисы отдельно (path строгое), проекты отдельно
-  webhook_json="$(echo "$group_json"  | jq -c '[.[] | select(.kind == "webhook")]')"
-  projects_json="$(echo "$group_json" | jq -c '[.[] | select(.kind == "project")]')"
-
+  # Пишем YAML
   {
-    echo "tunnel: ${TUN_ID}"
-    echo "credentials-file: ${CRED_JSON}"
-    echo
+    echo "tunnel: ${TUN}"
+    echo "credentials-file: ${CREDS_JSON}"
     echo "ingress:"
-
-    # 1) Webhook – сначала, чтобы match по path сработал до аппки
-    echo "$webhook_json" | jq -c '.[]?' | while read -r svc; do
-      rootDomain=$(echo "$svc" | jq -r '.rootDomain')
-      subdomain=$(echo "$svc"  | jq -r '.subdomain')
-      port=$(echo "$svc"       | jq -r '.port')
-      protocol=$(echo "$svc"   | jq -r '.protocol')
-      path=$(echo "$svc"       | jq -r '.path')
-
-      host="$rootDomain"
-      if [ -n "$subdomain" ] && [ "$subdomain" != "null" ]; then
-        host="${subdomain}.${rootDomain}"
-      fi
-
+    # каждая строка: "host service"
+    for line in "${RULES[@]}"; do
+      host="${line%% *}"
+      svc="${line#* }"
       echo "  - hostname: ${host}"
-      if [ -n "$path" ] && [ "$path" != "null" ] && [ "$path" != "/" ]; then
-        echo "    path: ${path}"
-      fi
-      echo "    service: ${protocol}://localhost:${port}"
+      echo "    service: ${svc}"
     done
-
-    # 2) Проекты – отдельные hostname без path (всё на приложуху)
-    echo "$projects_json" | jq -c '.[]?' | while read -r svc; do
-      name=$(echo "$svc"      | jq -r '.name')
-      rootDomain=$(echo "$svc"| jq -r '.rootDomain')
-      subdomain=$(echo "$svc" | jq -r '.subdomain')
-      port=$(echo "$svc"      | jq -r '.port')
-      protocol=$(echo "$svc"  | jq -r '.protocol')
-
-      host="$rootDomain"
-      if [ -n "$subdomain" ] && [ "$subdomain" != "null" ]; then
-        host="${subdomain}.${rootDomain}"
-      fi
-
-      echo "  - hostname: ${host}"
-      echo "    service: ${protocol}://localhost:${port}  # project: ${name}"
-    done
-
-    # 3) Фоллбек
     echo "  - service: http_status:404"
   } > "$CFG_YML"
 
-  echo "[cf-sync] Wrote $CFG_YML"
+  echo "[cf]   Written config: $CFG_YML"
   echo
 done
 
-echo "[cf-sync] cloudflared tunnel list:"
-cloudflared tunnel list
-echo
-
 echo "=== sync_cloudflare.sh finished ==="
-echo "[cf-sync] Next step (optional):"
-echo "  ./scripts/install_cloudflare_service.sh   # create & enable systemd services for tunnels"
+echo
+echo "[cf] You can run tunnels manually, e.g.:"
+for TUN in "${TUNNELS[@]}"; do
+  echo "  cloudflared --config ${CLOUDFLARE_DIR}/config-${TUN}.yml tunnel run ${TUN}"
+done
+echo
