@@ -77,7 +77,6 @@ ensure_repo() {
 
   if [ ! -d "$workDir/.git" ]; then
     echo "[repo] No .git in $workDir – cloning..."
-    # если папка не пустая, предупредим
     if [ "$(ls -A "$workDir" 2>/dev/null | wc -l)" -gt 0 ]; then
       echo "[repo] WARNING: $workDir is not empty. git clone may fail if files conflict."
     fi
@@ -86,7 +85,6 @@ ensure_repo() {
     echo "[repo] .git exists – updating existing repo..."
   fi
 
-  # checkout нужной ветки и обновление
   (
     cd "$workDir"
     echo "[repo] Using branch: $branch"
@@ -104,32 +102,26 @@ ensure_deploy_script() {
   local workDir="$2"
   local deployScript="$3"
 
-  # если не задан путь — дефолт
   if [ -z "$deployScript" ] || [ "$deployScript" = "null" ]; then
     deployScript="$workDir/deploy.sh"
   fi
 
   if [ ! -f "$deployScript" ]; then
-    # если есть шаблон – копируем
     if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
-      echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
+      echo "[deploy] deploy.sh not found for '$name', creating from template..."
       cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
       chmod +x "$deployScript"
     else
-      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
+      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing."
       return 1
     fi
   else
     chmod +x "$deployScript"
   fi
 
-  # лог — в stderr, чтобы не ломать command substitution
-  echo "[deploy] Using deploy script: $deployScript" >&2
-
-  # В stdout — ТОЛЬКО путь
-  printf '%s\n' "$deployScript"
+  echo "[deploy] Using deploy script: $deployScript"
+  echo "$deployScript"
 }
-
 
 # --- helper: run deploy.sh with args ---
 run_deploy() {
@@ -158,13 +150,13 @@ run_deploy() {
 for i in $(seq 0 $((projects_count - 1))); do
   project_json=$(jq ".projects[$i]" "$CONFIG_FILE")
 
-  name=$(echo "$project_json"       | jq -r '.name')
-  gitUrl=$(echo "$project_json"     | jq -r '.gitUrl')
-  branch=$(echo "$project_json"     | jq -r '.branch')
-  workDir=$(echo "$project_json"    | jq -r '.workDir')
-  deployScript=$(echo "$project_json" | jq -r '.deployScript // empty')
+  name=$(echo "$project_json"          | jq -r '.name')
+  gitUrl=$(echo "$project_json"        | jq -r '.gitUrl')
+  branch=$(echo "$project_json"        | jq -r '.branch')
+  workDir=$(echo "$project_json"       | jq -r '.workDir')
+  deployScript=$(echo "$project_json"  | jq -r '.deployScript // empty')
+  localPort=$(echo "$project_json"     | jq -r '.cloudflare.localPort // 3000')
 
-  # deployArgs: массив
   mapfile -t deployArgs < <(echo "$project_json" | jq -r '.deployArgs[]?')
 
   echo "[deploy_config] Project #$((i+1)) / $projects_count"
@@ -172,6 +164,7 @@ for i in $(seq 0 $((projects_count - 1))); do
   echo "  WorkDir  : $workDir"
   echo "  Git URL  : $gitUrl"
   echo "  Branch   : $branch"
+  echo "  Port     : $localPort"
   echo "  Script   : ${deployScript:-$workDir/deploy.sh}"
   echo "  Args     : ${deployArgs[*]:-(none)}"
   echo
@@ -184,20 +177,22 @@ for i in $(seq 0 $((projects_count - 1))); do
     continue
   fi
 
-  # 1) гарантируем наличие репозитория (git clone/pull)
+  # 1) гарантируем наличие репозитория
   ensure_repo "$name" "$gitUrl" "$branch" "$workDir"
 
-  # 2) гарантируем наличие deploy.sh (создаём из шаблона, если нет)
+  # 2) гарантируем наличие deploy.sh
   script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript") || {
     echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
-    echo
     continue
   }
 
-  # 3) запускаем deploy.sh
+  # 3) экспортируем порт для deploy.sh (автогенерация compose-файла)
+  export DEPLOY_PORT="$localPort"
+  export PROJECT_NAME="$name"
+
+  # 4) запускаем deploy.sh
   run_deploy "$name" "$workDir" "$script_path" "${deployArgs[@]}"
 done
-
 
 echo "=== Webhook config summary ==="
 jq -r '
@@ -209,7 +204,6 @@ jq -r '
 ' "$CONFIG_FILE"
 echo
 
-# запуск webhook.js (опционально)
 if command -v node >/dev/null 2>&1; then
   read -r -p "Start webhook server now (node webhook.js)? [Y/n]: " wans
   wans=${wans:-Y}
