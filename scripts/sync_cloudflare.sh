@@ -22,6 +22,17 @@ need_bin() {
   fi
 }
 
+ask_yes_no_default_yes() {
+  local msg="$1"
+  local ans
+  read -r -p "$msg [Y/n]: " ans
+  ans="${ans:-Y}"
+  case "$ans" in
+    n|N) return 1 ;;
+    *)   return 0 ;;
+  esac
+}
+
 need_bin jq
 need_bin cloudflared
 
@@ -43,7 +54,6 @@ if [ ! -f "$CERT_FILE" ]; then
 fi
 
 # --- Собираем список всех tunnelName из projects + webhook ---
-
 TUNNELS_JSON=$(jq -r '
   [
     .projects[]? | .cloudflare.tunnelName? // empty,
@@ -63,9 +73,72 @@ if [ "${#TUNNELS[@]}" -eq 0 ]; then
   exit 0
 fi
 
-echo "[cf] Detected tunnels in ${CLOUDFLARE_DIR}:"
+echo "[cf] Detected files in ${CLOUDFLARE_DIR}:"
 ls -1 "$CLOUDFLARE_DIR" || true
 echo
+
+# --- Текущее состояние туннелей (Name + ID) ---
+CF_TUNNELS_JSON="$(cloudflared tunnel list --output json 2>/dev/null || echo "[]")"
+
+# helper: получить credentials-файл для tunnelName
+get_credentials_file_for_tunnel() {
+  local tunnelName="$1"
+
+  # ищем ID по имени
+  local tid
+  tid="$(echo "$CF_TUNNELS_JSON" | jq -r --arg N "$tunnelName" '
+    map(select(.name == $N)) | if length==0 then "" else .[0].id end
+  ')"
+
+  # если не нашли — предложить создать туннель
+  if [ -z "$tid" ] || [ "$tid" = "null" ]; then
+    echo "[cf] Tunnel '$tunnelName' not found in 'cloudflared tunnel list'."
+    if ask_yes_no_default_yes "[cf] Create tunnel '$tunnelName' now?"; then
+      cloudflared tunnel create "$tunnelName"
+      # перечитываем список туннелей и пробуем ещё раз
+      CF_TUNNELS_JSON="$(cloudflared tunnel list --output json 2>/dev/null || echo "[]")"
+      tid="$(echo "$CF_TUNNELS_JSON" | jq -r --arg N "$tunnelName" '
+        map(select(.name == $N)) | if length==0 then "" else .[0].id end
+      ')"
+      if [ -z "$tid" ] || [ "$tid" = "null" ]; then
+        echo "[cf] ERROR: tunnel '$tunnelName' still not visible after create. Check manually."
+        return 1
+      fi
+    else
+      echo "[cf] Skipping tunnel '$tunnelName' (not created)."
+      return 1
+    fi
+  fi
+
+  local cred_by_id="${CLOUDFLARE_DIR}/${tid}.json"
+  local cred_by_name="${CLOUDFLARE_DIR}/${tunnelName}.json"
+  local chosen=""
+
+  if [ -f "$cred_by_id" ] && [ -f "$cred_by_name" ] && [ "$cred_by_id" != "$cred_by_name" ]; then
+    echo "[cf] Found two possible credentials for '$tunnelName':"
+    echo "  - by ID   : $cred_by_id"
+    echo "  - by name : $cred_by_name"
+    if ask_yes_no_default_yes "[cf] Use ID-based credentials ($cred_by_id) as default and ignore name-based file?"; then
+      chosen="$cred_by_id"
+    else
+      chosen="$cred_by_name"
+    fi
+  elif [ -f "$cred_by_id" ]; then
+    chosen="$cred_by_id"
+  elif [ -f "$cred_by_name" ]; then
+    chosen="$cred_by_name"
+  else
+    echo "[cf] ERROR: No credentials JSON found for tunnel '$tunnelName'."
+    echo "  Expected one of:"
+    echo "    $cred_by_id"
+    echo "    $cred_by_name"
+    echo "  Try running:"
+    echo "    cloudflared tunnel create $tunnelName"
+    return 1
+  fi
+
+  echo "$chosen"
+}
 
 # --- Helper: собрать правила host -> service для одного туннеля ---
 build_rules_for_tunnel() {
@@ -108,14 +181,11 @@ build_rules_for_tunnel() {
 # --- Основной цикл по tunnelName ---
 
 for TUN in "${TUNNELS[@]}"; do
-  echo "[cf] === Processing tunnelName='$TUN' ==="
+  echo "[cf] === Processing tunnelName='${TUN}' ==="
 
-  CREDS_JSON="${CLOUDFLARE_DIR}/${TUN}.json"
-  if [ ! -f "$CREDS_JSON" ]; then
-    echo "[cf] WARNING: credentials JSON not found: $CREDS_JSON"
-    echo "  You probably need to run:"
-    echo "    cloudflared tunnel create ${TUN}"
-    echo "  and then rerun sync_cloudflare.sh."
+  CREDS_JSON="$(get_credentials_file_for_tunnel "$TUN" || echo "")"
+  if [ -z "$CREDS_JSON" ]; then
+    echo "[cf] Skipping tunnel '${TUN}' due to missing credentials."
     echo
     continue
   fi
