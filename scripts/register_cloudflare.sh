@@ -1,6 +1,26 @@
 #!/bin/bash
 set -e
 
+ensure_cloudflared_symlink() {
+  # найдём реальный путь к cloudflared
+  local bin
+  bin="$(command -v cloudflared 2>/dev/null || true)"
+
+  if [ -z "$bin" ]; then
+    echo "[cf-register] cloudflared not found in PATH – cannot create symlink."
+    return 1
+  fi
+
+  # если уже есть /usr/bin/cloudflared – ничего не делаем
+  if [ -x /usr/bin/cloudflared ]; then
+    echo "[cf-register] /usr/bin/cloudflared already exists, skipping symlink."
+    return 0
+  fi
+
+  echo "[cf-register] Creating symlink /usr/bin/cloudflared -> $bin"
+  ln -s "$bin" /usr/bin/cloudflared
+}
+
 echo "=== register_cloudflare.sh ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -149,6 +169,8 @@ done
 echo "[cf-register] Current tunnels (cloudflared tunnel list):"
 cloudflared tunnel list
 echo
+
+ensure_cloudflared_symlink
 
 echo "=== register_cloudflare.sh finished ==="
 echo "[cf-register] Next steps:"
