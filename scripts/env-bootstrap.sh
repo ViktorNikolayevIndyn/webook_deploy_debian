@@ -5,12 +5,21 @@ set -e
 # - apt update / upgrade
 # - install curl, git, jq
 # - install Docker (if missing)
+# - install cloudflared (if missing)
 # NO SSH logic here.
 
 if [ "$EUID" -ne 0 ]; then
   echo "[env] This script must be run as root."
   exit 1
 fi
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+mkdir -p "$CONFIG_DIR"
+
+echo "[env] ROOT_DIR   = $ROOT_DIR"
+echo "[env] CONFIG_DIR = $CONFIG_DIR"
+echo
 
 echo "[env] Updating APT..."
 apt update -y
@@ -19,6 +28,32 @@ apt upgrade -y
 echo "[env] Installing base tools (curl, git, jq)..."
 apt install -y curl git jq
 
+# -------- cloudflared install helper --------
+install_cloudflared() {
+  echo "[env] Checking cloudflared ..."
+
+  if command -v cloudflared >/dev/null 2>&1; then
+    echo "[env] cloudflared already installed: $(command -v cloudflared)"
+    return
+  fi
+
+  echo "[env] Installing cloudflared (static binary) ..."
+  local target="/usr/local/bin/cloudflared"
+
+  curl -L \
+    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    -o "$target"
+
+  chmod +x "$target"
+
+  if command -v cloudflared >/dev/null 2>&1; then
+    echo "[env] cloudflared installed at: $(command -v cloudflared)"
+  else
+    echo "[env] WARNING: cloudflared still not found in PATH after install."
+  fi
+}
+
+# -------- Docker install --------
 echo "[env] Installing Docker (if not installed)..."
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -47,17 +82,17 @@ else
   echo "[env] Docker already installed."
 fi
 
+# -------- Install cloudflared after curl is guaranteed --------
+install_cloudflared
+
 echo
 echo "[env] Environment bootstrap finished."
 echo "[env] Next steps:"
 echo "  1) ./scripts/enable_ssh.sh   # create SSH user, sudo, docker group etc."
-echo "  2) ./init.sh                 # configure webhook + projects.json"
+echo "  2) ./scripts/init.sh         # configure webhook + projects.json"
+echo "  3) ./scripts/deploy_config.sh# first deploy & (optionally) start webhook"
 
-# ... в самом конце скрипта, перед exit / концом файла ...
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="$ROOT_DIR/config"
-mkdir -p "$CONFIG_DIR"
-
+# -------- Write env_bootstrap state JSON --------
 ENV_STATE="$CONFIG_DIR/env_bootstrap.json"
 
 cat > "$ENV_STATE" <<EOF
