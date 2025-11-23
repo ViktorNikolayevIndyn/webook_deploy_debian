@@ -1,97 +1,90 @@
 #!/bin/bash
 set -e
 
-MODE="${1:-dev}"  # dev | prod | staging и т.д.
+MODE="$1"
+WORKDIR="$(pwd)"
 
-echo "[deploy] Working dir: $(pwd)"
-echo "[deploy] Mode: $MODE"
+echo "[deploy] Working dir: $WORKDIR"
+echo "[deploy] Mode: ${MODE:-none}"
 
-# Имя проекта (по папке)
-PROJECT_NAME="${PROJECT_NAME:-$(basename "$(pwd)")}"
-# Порт берём из ENV, который задаёт deploy_config.sh, иначе 3000
-HOST_PORT="${DEPLOY_PORT:-3000}"
-
-# --- 1. git pull, если есть репозиторий ---
+# 1) git pull, если это git-репо
 if [ -d ".git" ]; then
   echo "[deploy] Running git pull..."
-  git pull || echo "[deploy] WARN: git pull failed (может быть ок для локальных тестов)"
+  git pull --ff-only || echo "[deploy] WARNING: git pull failed (non-fast-forward or other issue)."
 else
-  echo "[deploy] No .git directory – skipping git pull."
+  echo "[deploy] No .git directory here – skipping git pull."
 fi
 
-# --- 2. Поиск или автогенерация docker-compose файла ---
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+APP_NAME="$(basename "$WORKDIR")"
+PORT_DEFAULT_DEV=3001
+PORT_DEFAULT_PROD=3002
 
-find_compose_file() {
-  local mode="$1"
+# 2) Определим порт (если хочешь – можно потом передавать как 2-й аргумент)
+if [ -n "$DEPLOY_PORT" ]; then
+  PORT="$DEPLOY_PORT"
+else
+  case "$MODE" in
+    dev)  PORT="$PORT_DEFAULT_DEV" ;;
+    prod) PORT="$PORT_DEFAULT_PROD" ;;
+    *)    PORT=3000 ;;
+  esac
+fi
 
-  # Приоритет: docker-compose.<mode>.yml
-  local candidates=(
-    "docker-compose.${mode}.yml"
-    "docker-compose.${mode}.yaml"
-    "docker-compose.yml"
-    "docker-compose.yaml"
-  )
+echo "[deploy] Using APP_NAME=$APP_NAME, PORT=$PORT"
 
-  for f in "${candidates[@]}"; do
-    if [ -f "$f" ]; then
-      echo "$f"
-      return 0
-    fi
-  done
+# 3) Если нет Dockerfile – создаём минимальный для Node/Next
+if [ ! -f "Dockerfile" ]; then
+  echo "[deploy] Dockerfile not found – generating basic Node/Next Dockerfile..."
 
-  return 1
-}
+  cat > Dockerfile <<'EOF'
+FROM node:20-alpine
 
-generate_compose_file() {
-  local mode="$1"
-  local port="$2"
-  local file="docker-compose.${mode}.yml"
+WORKDIR /app
 
-  echo "[deploy] Autogenerating $file (mode=$mode, port=$port, project=$PROJECT_NAME)..."
+# Устанавливаем зависимости
+COPY package*.json ./
+RUN npm ci
 
-  cat > "$file" <<EOF
-services:
-  ${PROJECT_NAME}-${mode}:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: ${PROJECT_NAME}-${mode}
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=${mode}
-      - HOST=0.0.0.0
-      - PORT=3000
-    ports:
-      - "${port}:3000"
-    # В dev-режиме удобно монтировать код с хоста
-    $(if [ "$mode" = "dev" ]; then
-        cat <<'VOL'
-    volumes:
-      - .:/app
-      - /app/node_modules
-    command: npm run dev
-VOL
-      else
-        cat <<'VOL'
-    command: npm run start
-VOL
-      fi)
+# Копируем исходники
+COPY . .
+
+# Сборка (для Next / других билд-проектов)
+RUN npm run build
+
+EXPOSE 3000
+
+# Прод-режим: npm start (для Next – обычно "next start")
+CMD ["npm", "start"]
 EOF
 
-  echo "[deploy] Generated $file."
-  echo "$file"
-}
-
-COMPOSE_FILE=""
-if COMPOSE_FILE="$(find_compose_file "$MODE")"; then
-  echo "[deploy] Found compose file: $COMPOSE_FILE"
+  echo "[deploy] Dockerfile generated."
 else
-  echo "[deploy] No docker-compose file found – generating one..."
-  COMPOSE_FILE="$(generate_compose_file "$MODE" "$HOST_PORT")"
+  echo "[deploy] Existing Dockerfile found – using it."
 fi
 
-# --- 3. docker compose up --build --detach ---
+# 4) Если нет docker-compose.yml – создаём минимальный
+if [ ! -f "$COMPOSE_FILE" ]; then
+  echo "[deploy] $COMPOSE_FILE not found – generating basic compose file..."
+
+  cat > "$COMPOSE_FILE" <<EOF
+services:
+  ${APP_NAME}-${MODE:-app}:
+    build:
+      context: .
+    container_name: ${APP_NAME}-${MODE:-app}
+    restart: unless-stopped
+    ports:
+      - "${PORT}:3000"
+EOF
+
+  echo "[deploy] $COMPOSE_FILE generated."
+else
+  echo "[deploy] Existing $COMPOSE_FILE found – using it."
+fi
+
+# 5) Запуск docker compose
 echo "[deploy] Running: docker compose -f $COMPOSE_FILE up -d --build"
 docker compose -f "$COMPOSE_FILE" up -d --build
 
-echo "[deploy] Done. Mode=$MODE, port=$HOST_PORT, compose=$COMPOSE_FILE"
+echo "[deploy] Done."
