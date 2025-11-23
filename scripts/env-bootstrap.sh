@@ -13,53 +13,16 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="$ROOT_DIR/config"
-mkdir -p "$CONFIG_DIR"
-
-echo "[env] ROOT_DIR   = $ROOT_DIR"
-echo "[env] CONFIG_DIR = $CONFIG_DIR"
-echo
-
 echo "[env] Updating APT..."
 apt update -y
 apt upgrade -y
 
-echo "[env] Installing base tools (curl, git, jq)..."
-apt install -y curl git jq
+echo "[env] Installing base tools (curl, git, jq, ca-certificates, gnupg, lsb-release)..."
+apt install -y curl git jq ca-certificates gnupg lsb-release
 
-# -------- cloudflared install helper --------
-install_cloudflared() {
-  echo "[env] Checking cloudflared ..."
-
-  if command -v cloudflared >/dev/null 2>&1; then
-    echo "[env] cloudflared already installed: $(command -v cloudflared)"
-    return
-  fi
-
-  echo "[env] Installing cloudflared (static binary) ..."
-  local target="/usr/local/bin/cloudflared"
-
-  curl -L \
-    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-    -o "$target"
-
-  chmod +x "$target"
-
-  if command -v cloudflared >/dev/null 2>&1; then
-    echo "[env] cloudflared installed at: $(command -v cloudflared)"
-  else
-    echo "[env] WARNING: cloudflared still not found in PATH after install."
-  fi
-}
-
-# -------- Docker install --------
 echo "[env] Installing Docker (if not installed)..."
-
 if ! command -v docker >/dev/null 2>&1; then
   echo "[env] Docker not found, installing from official repo..."
-
-  apt install -y ca-certificates gnupg lsb-release
 
   install -m 0755 -d /etc/apt/keyrings
   if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
@@ -82,17 +45,39 @@ else
   echo "[env] Docker already installed."
 fi
 
-# -------- Install cloudflared after curl is guaranteed --------
-install_cloudflared
+echo "[env] Installing cloudflared (if not installed)..."
+if ! command -v cloudflared >/dev/null 2>&1; then
+  echo "[env] cloudflared not found, installing from Cloudflare repo..."
+
+  install -m 0755 -d /usr/share/keyrings
+
+  if [ ! -f /usr/share/keyrings/cloudflare-main.gpg ]; then
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+    chmod a+r /usr/share/keyrings/cloudflare-main.gpg
+  fi
+
+  # Debian bookworm
+  echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/ bookworm main" \
+    > /etc/apt/sources.list.d/cloudflare.list
+
+  apt update -y
+  apt install -y cloudflared
+else
+  echo "[env] cloudflared already installed."
+fi
 
 echo
 echo "[env] Environment bootstrap finished."
 echo "[env] Next steps:"
 echo "  1) ./scripts/enable_ssh.sh   # create SSH user, sudo, docker group etc."
-echo "  2) ./scripts/init.sh         # configure webhook + projects.json"
-echo "  3) ./scripts/deploy_config.sh# first deploy & (optionally) start webhook"
+echo "  2) ./init.sh                 # configure webhook + projects.json"
 
-# -------- Write env_bootstrap state JSON --------
+# --- State flag ---
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+mkdir -p "$CONFIG_DIR"
+
 ENV_STATE="$CONFIG_DIR/env_bootstrap.json"
 
 cat > "$ENV_STATE" <<EOF
