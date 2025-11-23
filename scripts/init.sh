@@ -8,13 +8,13 @@ CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 EXAMPLE_FILE="$SCRIPT_DIR/projects.example.json"
 DEPLOY_TEMPLATE="$SCRIPT_DIR/deploy.template.sh"
+SSH_STATE="$CONFIG_DIR/ssh_state.json"
 
 mkdir -p "$CONFIG_DIR"
 
-
-
-
-# ---------- Helpers ----------
+################################
+#          Helpers             #
+################################
 
 prompt() {
   local msg="$1"
@@ -63,17 +63,14 @@ validate_subdomain() {
 validate_path_token() {
   local val="$1"
   # allowed: a-z, 0-9, -, /
-  # дефис внутри [] должен быть в начале/конце, иначе он диапазон
   if [[ "$val" =~ ^[a-z0-9/-]+$ ]]; then
     return 0
   fi
   return 1
 }
 
-
 parse_repo_from_git_url() {
   local url="$1"
-  # Examples:
   # git@github.com:User/Repo.git -> User/Repo
   # https://github.com/User/Repo.git -> User/Repo
   local tmp="$url"
@@ -103,10 +100,9 @@ ensure_deploy_template() {
   fi
 
   if [ ! -f "$EXAMPLE_FILE" ]; then
-  echo "[init] WARNING: projects.example.json not found at $EXAMPLE_FILE"
-  # не критично – init.sh и так строит JSON с нуля
+    echo "[init] WARNING: projects.example.json not found at $EXAMPLE_FILE"
+    # не критично – init.sh и так строит JSON с нуля
   fi
-
 }
 
 append_project_to_config() {
@@ -205,21 +201,6 @@ set_webhook_config() {
   mv "$tmp" "$CONFIG_FILE"
 }
 
-copy_deploy_template_if_missing() {
-  local workDir="$1"
-
-  mkdir -p "$workDir"
-
-  if [ -f "$workDir/deploy.sh" ]; then
-    echo "[init] deploy.sh already exists in $workDir – keeping existing file."
-  else
-    echo "[init] Copying deploy.template.sh to $workDir/deploy.sh"
-    cp "$DEPLOY_TEMPLATE" "$workDir/deploy.sh"
-    chmod +x "$workDir/deploy.sh"
-  fi
-}
-
-
 show_projects_summary() {
   echo
   echo "[init] Summary of configured projects (from $CONFIG_FILE):"
@@ -229,7 +210,6 @@ show_projects_summary() {
     return
   fi
 
-  # Если есть jq – красивый вывод
   if command -v jq >/dev/null 2>&1; then
     jq -r '
       .projects[]? |
@@ -240,12 +220,13 @@ show_projects_summary() {
       " | subdomain=" + (.cloudflare.subdomain // "n/a")
     ' "$CONFIG_FILE"
   else
-    # fallback без jq – просто показать имена/ветки
     grep -E '"name"|\"branch\"' "$CONFIG_FILE" || true
   fi
 }
 
-# ---------- Start ----------
+################################
+#          Start               #
+################################
 
 echo "[init] Root dir: $ROOT_DIR"
 ensure_jq
@@ -283,7 +264,9 @@ fi
 
 echo
 
-# ---------- Webhook config ----------
+################################
+#      Webhook configuration   #
+################################
 
 echo "=== Webhook configuration ==="
 
@@ -314,7 +297,6 @@ done
 
 WEBHOOK_PROTOCOL=$(prompt "Webhook protocol" "http")
 
-# Cloudflare tunnel name for this rootDomain (можно оставить пустым)
 WEBHOOK_TUNNEL_NAME=$(prompt "Cloudflare tunnel name for rootDomain $WEBHOOK_ROOT_DOMAIN (optional)" "")
 
 set_webhook_config \
@@ -331,13 +313,15 @@ echo
 echo "[init] Webhook config saved."
 echo
 
-# map rootDomain -> tunnelName (кэш, чтобы не спрашивать каждый раз)
+# map rootDomain -> tunnelName (cache)
 declare -A ROOTDOMAIN_TUNNEL
 if [ -n "$WEBHOOK_ROOT_DOMAIN" ] && [ -n "$WEBHOOK_TUNNEL_NAME" ]; then
   ROOTDOMAIN_TUNNEL["$WEBHOOK_ROOT_DOMAIN"]="$WEBHOOK_TUNNEL_NAME"
 fi
 
-# ---------- Project wizard loop ----------
+################################
+#       Project wizard loop    #
+################################
 
 while true; do
   echo "=== New project configuration ==="
@@ -359,28 +343,23 @@ while true; do
 
   BRANCH=$(prompt "Branch name" "main")
 
-  # workDir default: /opt/<project_name>
   DEFAULT_WORKDIR="/opt/${PROJECT_NAME}"
   WORKDIR=$(prompt "Project workDir on server" "$DEFAULT_WORKDIR")
 
-  # deploy mode (goes into deployArgs[0])
   DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "dev")
 
-ROOT_DOMAIN="$WEBHOOK_ROOT_DOMAIN"
-echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)"
+  ROOT_DOMAIN="$WEBHOOK_ROOT_DOMAIN"
+  echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)"
 
-  # subdomain – validate
-    while true; do
+  while true; do
     SUBDOMAIN=$(prompt "Subdomain ONLY (e.g. dev for dev.${ROOT_DOMAIN})" "dev")
     if validate_subdomain "$SUBDOMAIN"; then
-        break
+      break
     else
-        echo "Invalid subdomain: only [a-z0-9-] allowed."
+      echo "Invalid subdomain: only [a-z0-9-] allowed."
     fi
-    done
+  done
 
-
-  # port – numeric
   PORT=$(prompt "Local port (container/service port on host)" "3000")
   if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
     echo "Invalid port, using 3000."
@@ -398,7 +377,6 @@ echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)
 
   PROTOCOL=$(prompt "Protocol (http/https)" "http")
 
-  # Tunnel name: reuse per rootDomain if available
   if [ -n "${ROOTDOMAIN_TUNNEL[$ROOT_DOMAIN]}" ]; then
     DEFAULT_TUNNEL="${ROOTDOMAIN_TUNNEL[$ROOT_DOMAIN]}"
   else
@@ -441,7 +419,6 @@ echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)
       "$PROTOCOL" \
       "$TUNNEL_NAME"
 
-    #copy_deploy_template_if_missing "$WORKDIR"
     echo "[init] Project added."
   else
     echo "[init] Project discarded."
@@ -462,12 +439,26 @@ echo "[init] Done."
 echo "[init] Final config: $CONFIG_FILE"
 echo "You can inspect it with: cat $CONFIG_FILE | jq"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="$ROOT_DIR/config"
-mkdir -p "$CONFIG_DIR"
+################################
+#   Ownership & state files    #
+################################
+
+# Определяем пользователя для владения projects.json (из ssh_state или webuser)
+APP_USER="webuser"
+if [ -f "$SSH_STATE" ] && command -v jq >/dev/null 2>&1; then
+  u="$(jq -r '.sshUser // empty' "$SSH_STATE" 2>/dev/null || true)"
+  if [ -n "$u" ]; then
+    APP_USER="$u"
+  fi
+fi
+
+# Права на каталог и config-файл
+chown "$APP_USER":"$APP_USER" "$CONFIG_DIR" "$CONFIG_FILE" 2>/dev/null || true
+chmod 750 "$CONFIG_DIR" 2>/dev/null || true
+chmod 640 "$CONFIG_FILE" 2>/dev/null || true
 
 PROJECTS_STATE="$CONFIG_DIR/projects_state.json"
-PROJECTS_COUNT=$(jq '.projects | length' "$CONFIG_DIR/projects.json" 2>/dev/null || echo 0)
+PROJECTS_COUNT=$(jq '.projects | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
 
 cat > "$PROJECTS_STATE" <<EOF
 {
@@ -478,7 +469,7 @@ cat > "$PROJECTS_STATE" <<EOF
 }
 EOF
 
-chown root:root "$PROJECTS_STATE"
-chmod 640 "$PROJECTS_STATE"
+chown root:root "$PROJECTS_STATE" 2>/dev/null || true
+chmod 640 "$PROJECTS_STATE" 2>/dev/null || true
 
 echo "[init] projects_state.json written to $PROJECTS_STATE"
