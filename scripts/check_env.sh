@@ -257,4 +257,34 @@ else
 fi
 
 echo
+echo "=== Runtime status ==="
+
+echo
+echo "[status] Docker containers:"
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+echo
+echo "[status] Webhook port check (4000):"
+if command -v ss >/dev/null 2>&1; then
+  ss -tulpn 2>/dev/null | awk 'NR==1 || /:4000 /'
+elif command -v netstat >/dev/null 2>&1; then
+  netstat -tulpn 2>/dev/null | awk 'NR==2 || /:4000 /'
+else
+  echo "  Neither ss nor netstat available to inspect ports."
+fi
+
+echo
+echo "[status] webhook-deploy.service:"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet webhook-deploy.service && {
+    echo "  active (running)"
+  } || {
+    echo "  inactive (not running)"
+  }
+else
+  echo "  systemctl not available (cannot check systemd service state)."
+fi
+
+echo
 echo "=== check_env.sh finished ==="
+
