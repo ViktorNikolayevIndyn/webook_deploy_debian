@@ -7,12 +7,21 @@ set -e
 # - sets password (with confirmation)
 # - optionally adds user to sudo and docker groups
 # - updates /etc/ssh/sshd_config (PasswordAuthentication, root login)
+# - writes ssh_state.json into config/ for other scripts (init, webhook, etc.)
 # Run as root.
 
 if [ "$EUID" -ne 0 ]; then
   echo "[ssh] This script must be run as root."
   exit 1
 fi
+
+# Paths for config + state
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="$ROOT_DIR/config"
+SSH_STATE_FILE="$CONFIG_DIR/ssh_state.json"
+
+mkdir -p "$CONFIG_DIR"
 
 ask_yes_no_default_yes() {
   local msg="$1"
@@ -37,6 +46,9 @@ ask_yes_no_default_no() {
 }
 
 echo "=== SSH enable script ==="
+echo "[ssh] ROOT_DIR   = $ROOT_DIR"
+echo "[ssh] CONFIG_DIR = $CONFIG_DIR"
+echo
 
 echo "[ssh] Installing openssh-server and sudo if needed..."
 apt update -y
@@ -145,6 +157,23 @@ else
   echo "[ssh] WARNING: $SSHD_CONFIG not found. SSH daemon config not updated."
 fi
 
+# --- Write ssh_state.json and fix permissions ---
+echo
+echo "[ssh] Writing SSH state to $SSH_STATE_FILE ..."
+cat > "$SSH_STATE_FILE" <<EOF
+{
+  "version": "1.0.0",
+  "sshUser": "$SSH_USER",
+  "timestamp": "$(date --iso-8601=seconds)",
+  "host": "$(hostname)"
+}
+EOF
+
+# Rights on config and ssh_state for SSH_USER
+chown "$SSH_USER:$SSH_USER" "$CONFIG_DIR" "$SSH_STATE_FILE" 2>/dev/null || true
+chmod 750 "$CONFIG_DIR" 2>/dev/null || true
+chmod 640 "$SSH_STATE_FILE" 2>/dev/null || true
+
 echo
 echo "=== SSH configuration summary ==="
 echo "  User:   $SSH_USER"
@@ -155,4 +184,5 @@ echo "      ssh ${SSH_USER}@<SERVER_IP_OR_HOSTNAME>"
 echo
 echo "[ssh] If Docker commands fail for this user, re-login or run 'newgrp docker' in the session."
 echo
+echo "[ssh] ssh_state.json written to: $SSH_STATE_FILE"
 echo "[ssh] Done."
