@@ -7,7 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
+
 CF_DIR="/root/.cloudflared"
+CERT_FILE="$CF_DIR/cert.pem"
 
 echo "[cf-register] ROOT_DIR    = $ROOT_DIR"
 echo "[cf-register] SCRIPT_DIR  = $SCRIPT_DIR"
@@ -16,7 +18,7 @@ echo "[cf-register] CONFIG_FILE = $CONFIG_FILE"
 echo "[cf-register] CF_DIR      = $CF_DIR"
 echo
 
-# ---- helpers ----
+# ----- helpers -----
 
 need_bin() {
   local bin="$1"
@@ -26,169 +28,129 @@ need_bin() {
   fi
 }
 
-ensure_file() {
-  local f="$1"
-  if [ ! -f "$f" ]; then
-    echo "[cf-register] ERROR: file not found: $f"
+ensure_config() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[cf-register] ERROR: config file not found: $CONFIG_FILE"
+    echo "              Run ./scripts/init.sh first."
     exit 1
   fi
 }
 
-# ---- checks ----
+# ----- check binaries -----
 
-need_bin jq
 need_bin cloudflared
-
-ensure_file "$CONFIG_FILE"
+need_bin jq
 
 mkdir -p "$CF_DIR"
 
-if [ ! -f "$CF_DIR/cert.pem" ]; then
-  echo "[cf-register] ERROR: $CF_DIR/cert.pem not found."
-  echo "[cf-register] You must run on this host (once):"
-  echo "    cloudflared tunnel login"
-  echo "and select the correct zone in the browser."
-  exit 1
+# ----- ensure cert.pem (cloudflared tunnel login) -----
+
+if [ ! -f "$CERT_FILE" ]; then
+  echo "[cf-register] $CERT_FILE not found."
+  echo "[cf-register] Now running 'cloudflared tunnel login'."
+  echo
+  echo "  • В консоли появится URL вида:"
+  echo "      https://dash.cloudflare.com/arg... "
+  echo "  • Открой этот URL в браузере,"
+  echo "    залогинься в Cloudflare и выбери нужную зону (домен)."
+  echo "  • После подтверждения Cloudflare скачает cert.pem на этот сервер."
+  echo
+
+  cloudflared tunnel login || {
+    echo "[cf-register] ERROR: cloudflared tunnel login failed."
+    exit 1
+  }
+
+  # проверяем ещё раз наличие cert.pem
+  if [ ! -f "$CERT_FILE" ]; then
+    echo "[cf-register] ERROR: cloudflared tunnel login finished but $CERT_FILE is still missing."
+    echo "[cf-register] Check the output above and repeat, if needed."
+    exit 1
+  fi
+else
+  echo "[cf-register] Found existing cert.pem: $CERT_FILE"
 fi
 
-echo "[cf-register] Found Cloudflare cert: $CF_DIR/cert.pem"
 echo
+ensure_config
 
-# ---- collect tunnels + FQDNs from config ----
-# output format: "<tunnelName> <fqdn>"
+# ----- collect unique tunnel names from projects.json -----
 
-echo "[cf-register] Parsing tunnels + FQDNs from projects.json ..."
+echo "[cf-register] Collecting tunnelName values from $CONFIG_FILE ..."
 
-MAP_LINES=$(jq -r '
+tunnel_names=$(jq -r '
   [
-    # webhook
-    (
-      .webhook as $w
-      | select($w.cloudflare.tunnelName != null and $w.cloudflare.tunnelName != "")
-      | {
-          tunnel:   $w.cloudflare.tunnelName,
-          fqdn:     ($w.cloudflare.subdomain + "." + $w.cloudflare.rootDomain)
-        }
-    ),
-    # projects
-    (
-      .projects[]? as $p
-      | select($p.cloudflare.tunnelName != null and $p.cloudflare.tunnelName != "")
-      | {
-          tunnel:   $p.cloudflare.tunnelName,
-          fqdn:     ($p.cloudflare.subdomain + "." + $p.cloudflare.rootDomain)
-        }
-    )
+    .webhook.cloudflare.tunnelName?,
+    (.projects[]?.cloudflare.tunnelName?)
   ]
-  | map(select(.fqdn != null and .fqdn != "" and .tunnel != null and .tunnel != ""))
-  | .[]
-  | "\(.tunnel) \(.fqdn)"
-' "$CONFIG_FILE")
+  | map(select(. != null and . != ""))
+  | unique[]
+' "$CONFIG_FILE" 2>/dev/null || true)
 
-if [ -z "$MAP_LINES" ]; then
-  echo "[cf-register] No tunnels / FQDNs found in config. Nothing to do."
+if [ -z "$tunnel_names" ]; then
+  echo "[cf-register] No tunnelName values found in config. Nothing to register."
   echo "=== register_cloudflare.sh finished ==="
   exit 0
 fi
 
-echo "[cf-register] Tunnels + FQDNs from config:"
-echo "$MAP_LINES"
+echo "[cf-register] Tunnels requested in config:"
+echo "$tunnel_names" | sed 's/^/  - /'
 echo
 
-# ---- ensure tunnels exist ----
+# ----- helper: get tunnel id by name -----
 
-# track which tunnels we already ensured
-declare -A TUNNEL_DONE
-
-# helper: find cred JSON for tunnelName
-find_cred_json_for_tunnel() {
-  local tname="$1"
-  local f
-
-  # search any *.json in CF_DIR whose TunnelName matches
-  for f in "$CF_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    if jq -e --arg tn "$tname" '.TunnelName == $tn' "$f" >/dev/null 2>&1; then
-      echo "$f"
-      return 0
-    fi
-  done
-
-  return 1
+get_tunnel_id_by_name() {
+  local name="$1"
+  cloudflared tunnel list --output json 2>/dev/null \
+    | jq -r --arg NAME "$name" '
+        .[]? | select(.name == $NAME) | .id
+      ' \
+    | head -n1
 }
 
-# first pass: ensure each tunnelName has a JSON
-echo "[cf-register] Ensuring Cloudflare tunnels exist ..."
-echo
+# ----- main loop over tunnelNames -----
 
-# build unique tunnel list
-TUNNELS=$(echo "$MAP_LINES" | awk '{print $1}' | sort -u)
+for TUN_NAME in $tunnel_names; do
+  echo "[cf-register] === Processing tunnelName='$TUN_NAME' ==="
 
-for t in $TUNNELS; do
-  echo "[cf-register] === Tunnel '$t' ==="
+  # ищем существующий туннель
+  TUN_ID="$(get_tunnel_id_by_name "$TUN_NAME" || true)"
 
-  CRED_FILE="$(find_cred_json_for_tunnel "$t" || true)"
-
-  if [ -n "$CRED_FILE" ]; then
-    echo "[cf-register] Found credentials JSON for '$t': $CRED_FILE"
+  if [ -n "$TUN_ID" ] && [ "$TUN_ID" != "null" ]; then
+    echo "[cf-register] Tunnel '$TUN_NAME' already exists with id=$TUN_ID"
   else
-    echo "[cf-register] No credentials JSON for '$t' – creating tunnel ..."
-    # this will create <TunnelID>.json in $CF_DIR
-    cloudflared tunnel create "$t"
-    # find again
-    CRED_FILE="$(find_cred_json_for_tunnel "$t" || true)"
+    echo "[cf-register] No tunnel named '$TUN_NAME' found. Creating..."
+    cloudflared tunnel create "$TUN_NAME" || {
+      echo "[cf-register] ERROR: failed to create tunnel '$TUN_NAME'."
+      continue
+    }
 
-    if [ -z "$CRED_FILE" ]; then
-      echo "[cf-register] ERROR: tunnel '$t' was created but no JSON found."
-      echo "[cf-register] Check /root/.cloudflared manually."
-      exit 1
+    # после create ещё раз читаем список
+    TUN_ID="$(get_tunnel_id_by_name "$TUN_NAME" || true)"
+    if [ -z "$TUN_ID" ] || [ "$TUN_ID" = "null" ]; then
+      echo "[cf-register] ERROR: tunnel '$TUN_NAME' created but id could not be determined."
+      continue
     fi
-
-    echo "[cf-register] Created tunnel '$t' with credentials: $CRED_FILE"
+    echo "[cf-register] Created tunnel '$TUN_NAME' with id=$TUN_ID"
   fi
 
-  # show basic info
-  echo "[cf-register] Tunnel JSON info:"
-  jq '.TunnelName, .TunnelID' "$CRED_FILE" || true
-  echo
+  # путь к credentials JSON
+  CRED_JSON="$CF_DIR/${TUN_ID}.json"
+  if [ -f "$CRED_JSON" ]; then
+    echo "[cf-register] Credentials file: $CRED_JSON"
+  else
+    echo "[cf-register] WARNING: credentials JSON not found at $CRED_JSON."
+    echo "             cloudflared usually creates it during 'tunnel create'."
+  fi
 
-  TUNNEL_DONE["$t"]=1
+  echo
 done
 
-# ---- DNS routes for each FQDN ----
-
-echo "[cf-register] Registering DNS routes (subdomains) via cloudflared tunnel route dns ..."
+echo "[cf-register] Current tunnels (cloudflared tunnel list):"
+cloudflared tunnel list
 echo
-
-# we may see same (tunnel,fqdn) multiple times -> use associative filter
-declare -A DONE_ROUTE
-
-while read -r TUNNEL_NAME FQDN; do
-  [ -n "$TUNNEL_NAME" ] || continue
-  [ -n "$FQDN" ] || continue
-
-  KEY="${TUNNEL_NAME}|${FQDN}"
-  if [ -n "${DONE_ROUTE[$KEY]}" ]; then
-    # already processed
-    continue
-  fi
-
-  echo "[cf-register] Route DNS: tunnel='$TUNNEL_NAME', fqdn='$FQDN'"
-
-  # This command is idempotent: if the record exists, it will be updated;
-  # if not, it will be created.
-  cloudflared tunnel route dns "$TUNNEL_NAME" "$FQDN" || {
-    echo "[cf-register] WARNING: failed to route DNS for '$FQDN' with tunnel '$TUNNEL_NAME'"
-  }
-
-  DONE_ROUTE["$KEY"]=1
-  echo
-done <<< "$MAP_LINES"
 
 echo "=== register_cloudflare.sh finished ==="
-echo
 echo "[cf-register] Next steps:"
-echo "  1) Generate per-tunnel config files with:"
-echo "       $SCRIPT_DIR/sync_cloudflare.sh"
-echo "  2) Start tunnel, for example:"
-echo "       cloudflared --config /root/.cloudflared/config-<TunnelName>.yml tunnel run"
+echo "  1) ./scripts/sync_cloudflare.sh   # generate config-<tunnelName>.yml with services"
+echo "  2) (optional) create systemd units for tunnels to auto-start on boot."
