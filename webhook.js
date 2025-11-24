@@ -1,16 +1,15 @@
 // webhook.js
-// Лёгкий GitHub webhook → deploy runner
-// - читает config/projects.json
-// - проверяет секрет (X-Hub-Signature-256), если задан
-// - на push по нужной ветке запускает deploy.sh напрямую
+// Simple GitHub webhook -> deploy runner with /health endpoint
 
 const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
-const CONFIG_PATH = path.join(__dirname, "config", "projects.json");
+const ROOT_DIR = __dirname;
+const CONFIG_PATH = path.join(ROOT_DIR, "config", "projects.json");
+const PACKAGE_JSON_PATH = path.join(ROOT_DIR, "package.json");
 
 let config = null;
 
@@ -25,11 +24,64 @@ function loadConfig() {
   }
 }
 
+function getVersionInfo() {
+  const info = {
+    packageVersion: null,
+    gitRev: null,
+    gitShortRev: null,
+    gitBranch: null,
+  };
+
+  // Версия из package.json (если есть)
+  try {
+    if (fs.existsSync(PACKAGE_JSON_PATH)) {
+      const raw = fs.readFileSync(PACKAGE_JSON_PATH, "utf8");
+      const pkg = JSON.parse(raw);
+      if (pkg && pkg.version) {
+        info.packageVersion = pkg.version;
+      }
+    }
+  } catch (e) {
+    // просто пропускаем
+  }
+
+  // Инфо из git
+  try {
+    info.gitRev = execSync("git rev-parse HEAD", {
+      cwd: ROOT_DIR,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch (e) {}
+
+  try {
+    info.gitShortRev = execSync("git rev-parse --short HEAD", {
+      cwd: ROOT_DIR,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch (e) {}
+
+  try {
+    info.gitBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: ROOT_DIR,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch (e) {}
+
+  return info;
+}
+
 loadConfig();
 
 const webhookCfg = (config && config.webhook) || {};
 const webhookPort = webhookCfg.port || 4000;
-const webhookPath = (webhookCfg.path || "/github").replace(/\/+$/, "") || "/github";
+const webhookPath =
+  (webhookCfg.path || "/github").replace(/\/+$/, "") || "/github";
 const webhookSecret =
   webhookCfg.secret && String(webhookCfg.secret).trim().length > 0
     ? String(webhookCfg.secret).trim()
@@ -43,7 +95,7 @@ function verifySignature(req, rawBody) {
 
   const sig = req.headers["x-hub-signature-256"];
   if (!sig || !sig.startsWith("sha256=")) {
-    console.warn("[verify] Missing or invalid X-Hub-Signature-256 header.");
+    console.warn("[verify] Missing X-Hub-Signature-256 header.");
     return false;
   }
 
@@ -73,7 +125,6 @@ function matchProjectsByPayload(payload) {
   const matches = [];
 
   for (const p of config.projects) {
-    // repo / gitUrl
     const projRepo = p.repo || "";
     const projGit = p.gitUrl || "";
 
@@ -97,7 +148,6 @@ function matchProjectsByPayload(payload) {
 
     if (!repoMatch) continue;
 
-    // ветка
     if (p.branch) {
       const expectedRef = `refs/heads/${p.branch}`;
       if (ref !== expectedRef) {
@@ -113,8 +163,9 @@ function matchProjectsByPayload(payload) {
 
 function runDeployForProject(project, ref) {
   const name = project.name || "noname";
-  const workDir = project.workDir || process.cwd();
-  const deployScript = project.deployScript || path.join(workDir, "deploy.sh");
+  const workDir = project.workDir || ROOT_DIR;
+  const deployScript =
+    project.deployScript || path.join(workDir, "deploy.sh");
   const deployArgs = Array.isArray(project.deployArgs)
     ? project.deployArgs
     : [];
@@ -125,7 +176,6 @@ function runDeployForProject(project, ref) {
     )}`
   );
 
-  // ВАЖНО: запускаем СКРИПТ НАПРЯМУЮ, без /bin/sh
   const child = spawn(deployScript, deployArgs, {
     cwd: workDir,
     env: process.env,
@@ -155,6 +205,28 @@ function runDeployForProject(project, ref) {
 
 const server = http.createServer((req, res) => {
   const urlPath = req.url.split("?")[0].replace(/\/+$/, "") || "/";
+
+  // --------- /health ----------
+  if (req.method === "GET" && urlPath === "/health") {
+    const version = getVersionInfo();
+    const body = {
+      status: "ok",
+      ts: new Date().toISOString(),
+      configPath: CONFIG_PATH,
+      webhook: {
+        port: webhookPort,
+        path: webhookPath,
+        secretEnabled: !!webhookSecret,
+      },
+      version,
+    };
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body, null, 2));
+    return;
+  }
+
+  // --------- GitHub webhook ----------
   if (req.method !== "POST" || urlPath !== webhookPath) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found\n");
@@ -175,6 +247,7 @@ const server = http.createServer((req, res) => {
     const bodyStr = rawBody.toString("utf8") || "{}";
 
     if (!verifySignature(req, rawBody)) {
+      console.warn("[webhook] Signature verification FAILED. Ignoring.");
       res.writeHead(401, { "Content-Type": "text/plain" });
       res.end("Invalid signature\n");
       return;
@@ -205,9 +278,7 @@ const server = http.createServer((req, res) => {
     }
 
     const matchedProjects = matchProjectsByPayload(payload);
-    console.log(
-      `[webhook] Matched projects: ${matchedProjects.length}`
-    );
+    console.log(`[webhook] Matched projects: ${matchedProjects.length}`);
 
     if (matchedProjects.length === 0) {
       res.writeHead(200, { "Content-Type": "text/plain" });
@@ -215,7 +286,7 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // отвечаем сразу, деплой — в фоне
+    // отвечаем сразу – деплой идёт в фоне
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("OK\n");
 

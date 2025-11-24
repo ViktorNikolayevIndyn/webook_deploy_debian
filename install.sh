@@ -207,5 +207,14 @@ else
     echo "[install] Skipping final ownership change: SSH user name could not be determined."
 fi
 
+if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
+  echo
+  echo "[install] Running after_install_fix.sh (fix permissions for project workDirs)..."
+  "$SCRIPT_DIR/after_install_fix.sh"
+else
+  echo
+  echo "[install] NOTE: after_install_fix.sh not found. Skipping permission fix."
+fi
+
 echo
 echo "=== install.sh finished ==="
