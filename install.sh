@@ -13,13 +13,14 @@ SCRIPT_DIR="$ROOT_DIR/scripts"
 CONFIG_DIR="$ROOT_DIR/config"
 SSH_STATE_FILE="$CONFIG_DIR/ssh_state.json"
 
-echo "[install] ROOT_DIR   = $ROOT_DIR"
+echo "[install] ROOT_DIR   = $ROOT_DIR"
 echo "[install] SCRIPT_DIR = $SCRIPT_DIR"
 echo "[install] CONFIG_DIR = $CONFIG_DIR"
 echo
 
 mkdir -p "$CONFIG_DIR"
 
+# --- Cleaned Function 1 ---
 ask_yes_no_default_yes() {
   local msg="$1"
   local ans
@@ -27,10 +28,10 @@ ask_yes_no_default_yes() {
   ans="${ans:-Y}"
   case "$ans" in
     n|N) return 1 ;;
-    *)   return 0 ;;
+    *)   return 0 ;;
   esac
 }
-
+# --- Cleaned Function 2 ---
 ask_yes_no_default_no() {
   local msg="$1"
   local ans
@@ -38,7 +39,7 @@ ask_yes_no_default_no() {
   ans="${ans:-N}"
   case "$ans" in
     y|Y) return 0 ;;
-    *)   return 1 ;;
+    *)   return 1 ;;
   esac
 }
 
@@ -110,8 +111,8 @@ fi
 echo
 
 echo "[install] Base installation phase finished."
-echo "         Config dir: $CONFIG_DIR"
-echo "         You can inspect config/projects.json if needed."
+echo "         Config dir: $CONFIG_DIR"
+echo "         You can inspect config/projects.json if needed."
 echo
 
 # 4) deploy_config.sh (деплой проектов + запуск webhook.js)
@@ -124,7 +125,7 @@ if [ -x "$SCRIPT_DIR/deploy_config.sh" ]; then
   fi
 else
   echo "[install] NOTE: scripts/deploy_config.sh not found yet."
-  echo "       Once you add it, you can run: $SCRIPT_DIR/deploy_config.sh"
+  echo "       Once you add it, you can run: $SCRIPT_DIR/deploy_config.sh"
 fi
 
 echo
@@ -170,17 +171,17 @@ echo
 
 if [ -n "$SSH_USER" ]; then
   echo "[install] Collecting all unique work directories from projects.json..."
-  
+  
   # Находим все уникальные workDir из всех проектов
   WORK_DIRS=$(jq -r '
     # Собираем все workDir из массива projects
     .projects[]?.workDir
     | select(. != null and . != "")
   ' "$CONFIG_DIR/projects.json" 2>/dev/null || true)
-  
+  
   # Добавляем корневой каталог самого установщика (где лежит webhook.js и конфиги)
   WORK_DIRS="$WORK_DIRS $ROOT_DIR"
-  
+  
   # Убираем дубликаты и очищаем список (на случай, если workDir совпадает с ROOT_DIR)
   WORK_DIRS=$(echo "$WORK_DIRS" | tr ' ' '\n' | sort -u || true)
 
@@ -188,18 +189,18 @@ if [ -n "$SSH_USER" ]; then
     echo "[install] WARNING: No valid workDir paths found in projects.json to change ownership."
   else
     echo "[install] Changing ownership of deployment directories to '$SSH_USER'..."
-    
+    
     for DIR in $WORK_DIRS; do
       if [ -d "$DIR" ]; then
-        echo "[install]   > chown -R $SSH_USER:$SSH_USER $DIR"
+        echo "[install]   > chown -R $SSH_USER:$SSH_USER $DIR"
         chown -R "$SSH_USER":"$SSH_USER" "$DIR" || {
           echo "[install] ERROR: Failed to change ownership for $DIR. Check if user '$SSH_USER' exists."
         }
       else
-        echo "[install]   > WARNING: Work directory $DIR not found (Skipping)."
+        echo "[install]   > WARNING: Work directory $DIR not found (Skipping)."
       fi
     done
-    
+    
     echo "[install] Ownership change complete for all configured project directories."
   fi
 else
