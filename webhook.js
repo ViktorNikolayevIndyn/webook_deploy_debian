@@ -24,6 +24,16 @@ function loadConfig() {
   }
 }
 
+// извлекаем имя ветки из ref
+// "refs/heads/main" -> "main"
+function extractBranch(ref) {
+  if (!ref) return null;
+  if (ref.startsWith("refs/heads/")) {
+    return ref.substring("refs/heads/".length);
+  }
+  return ref;
+}
+
 function getVersionInfo() {
   const info = {
     packageVersion: null,
@@ -115,49 +125,44 @@ function verifySignature(req, rawBody) {
   return ok;
 }
 
+// новая логика матчинга: только repo + branch, без хитрых эвристик
 function matchProjectsByPayload(payload) {
   if (!config || !Array.isArray(config.projects)) return [];
 
   const repoFull = payload?.repository?.full_name || "";
   const ref = payload?.ref || "";
-  const event = payload?.event || "push";
+  const branchName = extractBranch(ref);
 
-  const matches = [];
+  console.log(
+    `[match] Incoming: repo=${repoFull}, ref=${ref}, branch=${branchName}`
+  );
 
-  for (const p of config.projects) {
-    const projRepo = p.repo || "";
-    const projGit = p.gitUrl || "";
-
-    let repoMatch = false;
-
-    if (projRepo && repoFull && projRepo === repoFull) {
-      repoMatch = true;
-    } else if (
-      projRepo &&
-      repoFull &&
-      repoFull.toLowerCase().endsWith("/" + projRepo.split("/").pop())
-    ) {
-      repoMatch = true;
-    } else if (
-      projGit &&
-      repoFull &&
-      projGit.toLowerCase().includes(repoFull.toLowerCase().split("/").pop())
-    ) {
-      repoMatch = true;
-    }
-
-    if (!repoMatch) continue;
-
-    if (p.branch) {
-      const expectedRef = `refs/heads/${p.branch}`;
-      if (ref !== expectedRef) {
-        continue;
-      }
-    }
-
-    matches.push(p);
+  if (!repoFull || !branchName) {
+    console.log("[match] repo or branch is empty, no matches.");
+    return [];
   }
 
+  console.log("[match] Projects in config:");
+  for (const p of config.projects) {
+    console.log(
+      `  - name=${p.name}, repo=${p.repo}, branch=${p.branch}, workDir=${p.workDir}`
+    );
+  }
+
+  const matches = config.projects.filter((p) => {
+    if (!p.repo) return false;
+
+    // строгое совпадение полного имени репо
+    if (p.repo !== repoFull) return false;
+
+    // если ветка в конфиге не задана – матчим все ветки этого репо
+    if (!p.branch) return true;
+
+    // точное совпадение имени ветки
+    return p.branch === branchName;
+  });
+
+  console.log(`[match] Matched ${matches.length} project(s).`);
   return matches;
 }
 

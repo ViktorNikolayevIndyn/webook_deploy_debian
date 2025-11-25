@@ -14,6 +14,72 @@ echo "[cf-dns] CONFIG_DIR  = $CONFIG_DIR"
 echo "[cf-dns] CONFIG_FILE = $CONFIG_FILE"
 echo
 
+route_dns_for_host() {
+  local tunnelName="$1"
+  local host="$2"
+
+  echo "[cf-dns]   Running: cloudflared tunnel route dns $tunnelName $host"
+  local out
+  # запускаем cloudflared и собираем вывод
+  if out=$(cloudflared tunnel route dns "$tunnelName" "$host" 2>&1); then
+    echo "$out"
+    echo "[cf-dns]   OK: DNS route ensured for $host"
+    return 0
+  fi
+
+  # если команда завершилась с ошибкой – печатаем вывод
+  echo "$out"
+
+  # спец-случай: запись уже существует
+  if grep -q "An A, AAAA, or CNAME record with that host already exists" <<<"$out"; then
+    # если есть токен и zone id – пробуем переписать через API
+    if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then
+      echo "[cf-dns]   Existing record for $host detected. Trying to override via Cloudflare API..."
+
+      # забираем все DNS-записи для host
+      local ids
+      ids=$(
+        curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$host" \
+          -H "Authorization: Bearer $CF_API_TOKEN" \
+          -H "Content-Type: application/json" \
+        | jq -r '.result[].id'
+      )
+
+      if [ -z "$ids" ]; then
+        echo "[cf-dns]   No existing DNS records found in API for $host, cannot override."
+        return 1
+      fi
+
+      local id
+      for id in $ids; do
+        echo "[cf-dns]   Deleting old DNS record id=$id for $host via API..."
+        curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$id" \
+          -H "Authorization: Bearer $CF_API_TOKEN" \
+          -H "Content-Type: application/json" >/dev/null
+      done
+
+      echo "[cf-dns]   Retry: cloudflared tunnel route dns $tunnelName $host"
+      if cloudflared tunnel route dns "$tunnelName" "$host"; then
+        echo "[cf-dns]   OK: DNS route overridden for $host"
+        return 0
+      else
+        echo "[cf-dns]   ERROR: route dns still failing for $host after override attempt."
+        return 1
+      fi
+    else
+      # токена нет – сообщаем, что надо руками удалить в панели
+      echo "[cf-dns]   WARNING: DNS record for $host already exists and CF_API_TOKEN/CF_ZONE_ID are not set."
+      echo "[cf-dns]            Delete existing A/AAAA/CNAME for $host in Cloudflare dashboard, then rerun sync_cloudflare_dns.sh."
+      # считаем это soft-ошибкой и идём дальше
+      return 0
+    fi
+  fi
+
+  echo "[cf-dns]   ERROR: failed to route DNS for $host"
+  return 1
+}
+
+
 # --- basic checks ---
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "[cf-dns] ERROR: config file not found: $CONFIG_FILE"
