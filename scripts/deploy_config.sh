@@ -134,26 +134,31 @@ ensure_deploy_script() {
   local workDir="$2"
   local deployScript="$3"
 
+  # если не задан путь — дефолт
   if [ -z "$deployScript" ] || [ "$deployScript" = "null" ]; then
     deployScript="$workDir/deploy.sh"
   fi
 
   if [ ! -f "$deployScript" ]; then
+    # если есть шаблон – копируем
     if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
-      echo "[deploy] deploy.sh not found for '$name', creating from template..."
+      echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
+      mkdir -p "$workDir"
       cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
       chmod +x "$deployScript"
     else
-      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing."
+      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
       return 1
     fi
   else
     chmod +x "$deployScript"
   fi
 
-  echo "[deploy] Using deploy script: $deployScript"
-  echo "$deployScript"
+  # лог в stderr, путь — в stdout (для переменной)
+  echo "[deploy] Using deploy script: $deployScript" >&2
+  printf '%s\n' "$deployScript"
 }
+
 
 # --- helper: run deploy.sh with args ---
 run_deploy() {
