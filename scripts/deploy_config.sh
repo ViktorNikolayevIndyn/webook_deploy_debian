@@ -85,15 +85,47 @@ ensure_repo() {
     echo "[repo] .git exists – updating existing repo..."
   fi
 
+  # помечаем каталог как безопасный для текущего пользователя (root),
+  # чтобы не ловить "detected dubious ownership"
+  git config --global --add safe.directory "$workDir" 2>/dev/null || true
+
+  local rc=0
   (
     cd "$workDir"
+    set +e
     echo "[repo] Using branch: $branch"
     git fetch --all
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "[repo] ERROR: git fetch failed (code $rc) in $workDir"
+      exit $rc
+    fi
+
     git checkout "$branch"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "[repo] ERROR: git checkout '$branch' failed (code $rc) in $workDir"
+      exit $rc
+    fi
+
     git pull origin "$branch"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "[repo] ERROR: git pull origin '$branch' failed (code $rc) in $workDir"
+      exit $rc
+    fi
+
+    exit 0
   )
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "[repo] <<< Git operations for '$name' FAILED with code $rc"
+    return $rc
+  fi
+
   echo "[repo] <<< Repo ready for '$name'"
   echo
+  return 0
 }
 
 # --- helper: ensure deploy.sh exists & executable ---
@@ -108,23 +140,20 @@ ensure_deploy_script() {
 
   if [ ! -f "$deployScript" ]; then
     if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
-      echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
+      echo "[deploy] deploy.sh not found for '$name', creating from template..."
       cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
       chmod +x "$deployScript"
     else
-      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
+      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing."
       return 1
     fi
   else
     chmod +x "$deployScript"
   fi
 
-  # Лог только в stderr
-  echo "[deploy] Using deploy script: $deployScript" >&2
-  # В stdout — ТОЛЬКО путь, чтобы его можно было безопасно поймать через $(...)
-  printf '%s\n' "$deployScript"
+  echo "[deploy] Using deploy script: $deployScript"
+  echo "$deployScript"
 }
-
 
 # --- helper: run deploy.sh with args ---
 run_deploy() {
@@ -153,21 +182,23 @@ run_deploy() {
 for i in $(seq 0 $((projects_count - 1))); do
   project_json=$(jq ".projects[$i]" "$CONFIG_FILE")
 
-  name=$(echo "$project_json"          | jq -r '.name')
-  gitUrl=$(echo "$project_json"        | jq -r '.gitUrl')
-  branch=$(echo "$project_json"        | jq -r '.branch')
-  workDir=$(echo "$project_json"       | jq -r '.workDir')
-  deployScript=$(echo "$project_json"  | jq -r '.deployScript // empty')
-  localPort=$(echo "$project_json"     | jq -r '.cloudflare.localPort // 3000')
+  name=$(echo "$project_json"       | jq -r '.name')
+  gitUrl=$(echo "$project_json"     | jq -r '.gitUrl')
+  branch=$(echo "$project_json"     | jq -r '.branch')
+  workDir=$(echo "$project_json"    | jq -r '.workDir')
+  deployScript=$(echo "$project_json" | jq -r '.deployScript // empty')
 
   mapfile -t deployArgs < <(echo "$project_json" | jq -r '.deployArgs[]?')
+
+  # для статуса удобно ещё порт показывать
+  port=$(echo "$project_json" | jq -r '.cloudflare.localPort // "n/a"')
 
   echo "[deploy_config] Project #$((i+1)) / $projects_count"
   echo "  Name     : $name"
   echo "  WorkDir  : $workDir"
   echo "  Git URL  : $gitUrl"
   echo "  Branch   : $branch"
-  echo "  Port     : $localPort"
+  echo "  Port     : $port"
   echo "  Script   : ${deployScript:-$workDir/deploy.sh}"
   echo "  Args     : ${deployArgs[*]:-(none)}"
   echo
@@ -181,19 +212,32 @@ for i in $(seq 0 $((projects_count - 1))); do
   fi
 
   # 1) гарантируем наличие репозитория
-  ensure_repo "$name" "$gitUrl" "$branch" "$workDir"
+  if ! ensure_repo "$name" "$gitUrl" "$branch" "$workDir"; then
+    echo
+    read -r -p "[deploy_config] Git error for '$name'. Try again? [y/N]: " retry
+    retry=${retry:-N}
+    if [[ "$retry" =~ ^[Yy]$ ]]; then
+      echo "[deploy_config] Retrying ensure_repo for '$name'..."
+      if ! ensure_repo "$name" "$gitUrl" "$branch" "$workDir"; then
+        echo "[deploy_config] Still failing. Skipping '$name'."
+        echo
+        continue
+      fi
+    else
+      echo "[deploy_config] Skipping '$name' due to git error."
+      echo
+      continue
+    fi
+  fi
 
   # 2) гарантируем наличие deploy.sh
   script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript") || {
     echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
+    echo
     continue
   }
 
-  # 3) экспортируем порт для deploy.sh (автогенерация compose-файла)
-  export DEPLOY_PORT="$localPort"
-  export PROJECT_NAME="$name"
-
-  # 4) запускаем deploy.sh
+  # 3) запускаем deploy.sh
   run_deploy "$name" "$workDir" "$script_path" "${deployArgs[@]}"
 done
 
@@ -212,7 +256,6 @@ echo "[deploy_config] To restart it manually:"
 echo "  sudo systemctl restart webhook-deploy.service"
 echo "Logs:"
 echo "  journalctl -u webhook-deploy.service -n 20 -f"
-
 
 echo
 echo "=== Final status ==="

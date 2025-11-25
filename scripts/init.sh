@@ -268,50 +268,135 @@ echo
 #      Webhook configuration   #
 ################################
 
+# ---------- Webhook config ----------
+
 echo "=== Webhook configuration ==="
 
-WEBHOOK_PORT=$(prompt "Webhook port" "4000")
-WEBHOOK_PATH=$(prompt "Webhook path" "/github")
-WEBHOOK_SECRET=$(prompt "Webhook secret (empty allowed)" "")
+HAS_WEBHOOK="no"
+if [ -f "$CONFIG_FILE" ]; then
+  HAS_WEBHOOK=$(jq -r 'if .webhook and .webhook.port then "yes" else "no" end' "$CONFIG_FILE")
+fi
 
-WEBHOOK_ROOT_DOMAIN=$(prompt "Root domain for webhook (e.g. linkify.cloud)" "linkify.cloud")
+if [ "$HAS_WEBHOOK" = "yes" ]; then
+  # читаем текущие значения
+  CUR_PORT=$(jq -r '.webhook.port' "$CONFIG_FILE")
+  CUR_PATH=$(jq -r '.webhook.path' "$CONFIG_FILE")
+  CUR_SECRET=$(jq -r '.webhook.secret // ""' "$CONFIG_FILE")
+  CUR_ROOT_DOMAIN=$(jq -r '.webhook.cloudflare.rootDomain // "linkify.cloud"' "$CONFIG_FILE")
+  CUR_SUBDOMAIN=$(jq -r '.webhook.cloudflare.subdomain // "webhook"' "$CONFIG_FILE")
+  CUR_LOCALPATH=$(jq -r '.webhook.cloudflare.localPath // "/github"' "$CONFIG_FILE")
+  CUR_PROTOCOL=$(jq -r '.webhook.cloudflare.protocol // "http"' "$CONFIG_FILE")
+  CUR_TUNNEL_NAME=$(jq -r '.webhook.cloudflare.tunnelName // ""' "$CONFIG_FILE")
 
-while true; do
-  WEBHOOK_SUBDOMAIN=$(prompt "Webhook subdomain (e.g. webhook)" "webhook")
-  if validate_subdomain "$WEBHOOK_SUBDOMAIN"; then
-    break
+  echo "[init] Existing webhook config detected:"
+  echo "  port      : $CUR_PORT"
+  echo "  path      : $CUR_PATH"
+  echo "  domain    : $CUR_ROOT_DOMAIN (sub=$CUR_SUBDOMAIN)"
+  echo "  localPath : $CUR_LOCALPATH"
+  echo "  protocol  : $CUR_PROTOCOL"
+  echo "  tunnel    : $CUR_TUNNEL_NAME"
+  echo
+
+  if yes_no_default_no "Reconfigure webhook settings?"; then
+    # даём возможность изменить, но по умолчанию — старые значения
+    WEBHOOK_PORT=$(prompt "Webhook port" "$CUR_PORT")
+    WEBHOOK_PATH=$(prompt "Webhook path" "$CUR_PATH")
+
+    # секрет: пустой ввод = оставить старый
+    NEW_SECRET=$(prompt "Webhook secret (leave empty to keep current)" "")
+    if [ -z "$NEW_SECRET" ]; then
+      WEBHOOK_SECRET="$CUR_SECRET"
+    else
+      WEBHOOK_SECRET="$NEW_SECRET"
+    fi
+
+    WEBHOOK_ROOT_DOMAIN=$(prompt "Root domain for webhook (e.g. linkify.cloud)" "$CUR_ROOT_DOMAIN")
+
+    while true; do
+      WEBHOOK_SUBDOMAIN=$(prompt "Webhook subdomain (e.g. webhook)" "$CUR_SUBDOMAIN")
+      if validate_subdomain "$WEBHOOK_SUBDOMAIN"; then
+        break
+      else
+        echo "Invalid subdomain: only [a-z0-9-] allowed."
+      fi
+    done
+
+    while true; do
+      WEBHOOK_LOCALPATH=$(prompt "Webhook localPath (internal path, usually same as path)" "$CUR_LOCALPATH")
+      if validate_path_token "$WEBHOOK_LOCALPATH"; then
+        break
+      else
+        echo "Invalid localPath: only a-z0-9- and / allowed."
+      fi
+    done
+
+    WEBHOOK_PROTOCOL=$(prompt "Webhook protocol" "$CUR_PROTOCOL")
+
+    # имя туннеля: по умолчанию текущее
+    WEBHOOK_TUNNEL_NAME=$(prompt "Cloudflare tunnel name for rootDomain $WEBHOOK_ROOT_DOMAIN (optional)" "$CUR_TUNNEL_NAME")
+
+    set_webhook_config \
+      "$WEBHOOK_PORT" \
+      "$WEBHOOK_PATH" \
+      "$WEBHOOK_SECRET" \
+      "$WEBHOOK_ROOT_DOMAIN" \
+      "$WEBHOOK_SUBDOMAIN" \
+      "$WEBHOOK_LOCALPATH" \
+      "$WEBHOOK_PROTOCOL" \
+      "$WEBHOOK_TUNNEL_NAME"
+
+    echo
+    echo "[init] Webhook config updated."
+    echo
   else
-    echo "Invalid subdomain: only [a-z0-9-] allowed."
+    echo "[init] Keeping existing webhook config as is."
+    WEBHOOK_ROOT_DOMAIN="$CUR_ROOT_DOMAIN"
+    WEBHOOK_TUNNEL_NAME="$CUR_TUNNEL_NAME"
+    echo
   fi
-done
+else
+  # вебхук ещё не настроен → обычный мастер
+  WEBHOOK_PORT=$(prompt "Webhook port" "4000")
+  WEBHOOK_PATH=$(prompt "Webhook path" "/github")
+  WEBHOOK_SECRET=$(prompt "Webhook secret (empty allowed)" "")
 
-# localPath для webhook – обычно тот же path
-while true; do
-  WEBHOOK_LOCALPATH=$(prompt "Webhook localPath (internal path, usually same as path)" "$WEBHOOK_PATH")
-  if validate_path_token "$WEBHOOK_LOCALPATH"; then
-    break
-  else
-    echo "Invalid localPath: only a-z0-9- and / allowed."
-  fi
-done
+  WEBHOOK_ROOT_DOMAIN=$(prompt "Root domain for webhook (e.g. linkify.cloud)" "linkify.cloud")
 
-WEBHOOK_PROTOCOL=$(prompt "Webhook protocol" "http")
+  while true; do
+    WEBHOOK_SUBDOMAIN=$(prompt "Webhook subdomain (e.g. webhook)" "webhook")
+    if validate_subdomain "$WEBHOOK_SUBDOMAIN"; then
+      break
+    else
+      echo "Invalid subdomain: only [a-z0-9-] allowed."
+    fi
+  done
 
-WEBHOOK_TUNNEL_NAME=$(prompt "Cloudflare tunnel name for rootDomain $WEBHOOK_ROOT_DOMAIN (optional)" "")
+  while true; do
+    WEBHOOK_LOCALPATH=$(prompt "Webhook localPath (internal path, usually same as path)" "$WEBHOOK_PATH")
+    if validate_path_token "$WEBHOOK_LOCALPATH"; then
+      break
+    else
+      echo "Invalid localPath: only a-z0-9- and / allowed."
+    fi
+  done
 
-set_webhook_config \
-  "$WEBHOOK_PORT" \
-  "$WEBHOOK_PATH" \
-  "$WEBHOOK_SECRET" \
-  "$WEBHOOK_ROOT_DOMAIN" \
-  "$WEBHOOK_SUBDOMAIN" \
-  "$WEBHOOK_LOCALPATH" \
-  "$WEBHOOK_PROTOCOL" \
-  "$WEBHOOK_TUNNEL_NAME"
+  WEBHOOK_PROTOCOL=$(prompt "Webhook protocol" "http")
+  WEBHOOK_TUNNEL_NAME=$(prompt "Cloudflare tunnel name for rootDomain $WEBHOOK_ROOT_DOMAIN (optional)" "")
 
-echo
-echo "[init] Webhook config saved."
-echo
+  set_webhook_config \
+    "$WEBHOOK_PORT" \
+    "$WEBHOOK_PATH" \
+    "$WEBHOOK_SECRET" \
+    "$WEBHOOK_ROOT_DOMAIN" \
+    "$WEBHOOK_SUBDOMAIN" \
+    "$WEBHOOK_LOCALPATH" \
+    "$WEBHOOK_PROTOCOL" \
+    "$WEBHOOK_TUNNEL_NAME"
+
+  echo
+  echo "[init] Webhook config saved."
+  echo
+fi
 
 # map rootDomain -> tunnelName (cache)
 declare -A ROOTDOMAIN_TUNNEL
