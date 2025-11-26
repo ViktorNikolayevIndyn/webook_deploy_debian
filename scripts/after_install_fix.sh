@@ -56,6 +56,32 @@ fi
 echo "[after] Using sshUser='$sshUser', primaryGroup='$primaryGroup'"
 echo
 
+# Сначала обрабатываем корневую папку проекта (webhook.js, config/, node_modules/)
+echo "[after] Processing main project directory: $ROOT_DIR"
+if [ -d "$ROOT_DIR" ]; then
+  echo "[after]  -> chown -R ${sshUser}:${primaryGroup} $ROOT_DIR"
+  chown -R "${sshUser}:${primaryGroup}" "$ROOT_DIR"
+  echo "[after]  -> chmod 755 $ROOT_DIR"
+  chmod 755 "$ROOT_DIR"
+fi
+echo
+
+# Права для config/
+if [ -d "$CONFIG_DIR" ]; then
+  echo "[after] Processing config directory: $CONFIG_DIR"
+  echo "[after]  -> chown -R ${sshUser}:${primaryGroup} $CONFIG_DIR"
+  chown -R "${sshUser}:${primaryGroup}" "$CONFIG_DIR"
+  echo "[after]  -> chmod 750 $CONFIG_DIR"
+  chmod 750 "$CONFIG_DIR"
+  
+  # projects.json должен читаться webhook.js
+  if [ -f "$PROJECTS_FILE" ]; then
+    echo "[after]  -> chmod 640 $PROJECTS_FILE"
+    chmod 640 "$PROJECTS_FILE"
+  fi
+fi
+echo
+
 # читаем workDir всех проектов из projects.json
 workDirs=()
 if [ -f "$PROJECTS_FILE" ]; then
@@ -65,7 +91,7 @@ else
 fi
 
 if [ "${#workDirs[@]}" -eq 0 ]; then
-  echo "[after] No workDirs found in projects.json. Nothing to chown."
+  echo "[after] No workDirs found in projects.json. Nothing more to chown."
   echo "=== after_install_fix.sh finished ==="
   exit 0
 fi
@@ -73,6 +99,12 @@ fi
 # проходим по каждому workDir
 for wd in "${workDirs[@]}"; do
   [ -z "$wd" ] && continue
+  
+  # Пропускаем ROOT_DIR, уже обработан выше
+  if [ "$wd" = "$ROOT_DIR" ]; then
+    echo "[after] Skipping $wd (already processed as ROOT_DIR)"
+    continue
+  fi
 
   echo "[after] Processing workDir: $wd"
 

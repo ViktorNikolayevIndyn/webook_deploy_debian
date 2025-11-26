@@ -538,7 +538,11 @@ if [ -f "$SSH_STATE" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 # Права на каталог и config-файл
-chown "$APP_USER":"$APP_USER" "$CONFIG_DIR" "$CONFIG_FILE" 2>/dev/null || true
+echo "[init] Setting ownership: ${APP_USER}:${APP_USER} for $CONFIG_DIR and $CONFIG_FILE"
+chown "$APP_USER":"$APP_USER" "$CONFIG_DIR" "$CONFIG_FILE" 2>/dev/null || {
+  echo "[init] WARNING: Failed to chown $CONFIG_DIR or $CONFIG_FILE to $APP_USER"
+  echo "[init]          This may cause permission errors. Run: chown -R $APP_USER:$APP_USER $CONFIG_DIR"
+}
 chmod 750 "$CONFIG_DIR" 2>/dev/null || true
 chmod 640 "$CONFIG_FILE" 2>/dev/null || true
 

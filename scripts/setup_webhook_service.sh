@@ -42,6 +42,24 @@ fi
 echo "[webhook-setup] Service will run as: ${SERVICE_USER}:${SERVICE_GROUP}"
 echo
 
+# 3.5) Проверяем права на ROOT_DIR, если запускаем под webuser
+if [ "$SERVICE_USER" != "root" ]; then
+  echo "[webhook-setup] Checking ownership of $ROOT_DIR..."
+  CURRENT_OWNER=$(stat -c '%U' "$ROOT_DIR" 2>/dev/null || echo "unknown")
+  
+  if [ "$CURRENT_OWNER" != "$SERVICE_USER" ]; then
+    echo "[webhook-setup] WARNING: $ROOT_DIR is owned by '$CURRENT_OWNER', but service runs as '$SERVICE_USER'"
+    echo "[webhook-setup]          Changing ownership to ${SERVICE_USER}:${SERVICE_GROUP}..."
+    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$ROOT_DIR" || {
+      echo "[webhook-setup] ERROR: Failed to chown $ROOT_DIR"
+      echo "[webhook-setup]        Service may fail to start. Fix manually: chown -R $SERVICE_USER:$SERVICE_GROUP $ROOT_DIR"
+    }
+  else
+    echo "[webhook-setup] Ownership OK: $ROOT_DIR is owned by $SERVICE_USER"
+  fi
+fi
+echo
+
 # 4) Создаём/обновляем unit-файл systemd
 echo "[webhook-setup] Writing systemd unit to $SERVICE_FILE ..."
 

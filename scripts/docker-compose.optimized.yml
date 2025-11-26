@@ -1,0 +1,91 @@
+# Оптимизированный docker-compose.yml с volume mounting для быстрого деплоя
+# Копировать в проект как docker-compose.yml
+
+services:
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # BuildKit для ускорения сборки
+      cache_from:
+        - app-dev:latest
+    image: app-dev:latest
+    container_name: app-dev
+    restart: unless-stopped
+    
+    ports:
+      - "3001:3000"
+    
+    # Volume mounting для hot reload (DEV режим)
+    # Изменения в коде мгновенно отражаются в контейнере
+    volumes:
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./pages:/app/pages:ro
+      - ./app:/app/app:ro
+      - ./components:/app/components:ro
+      - ./styles:/app/styles:ro
+      # НЕ монтируем node_modules и .next - они должны быть в контейнере
+    
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - WATCHPACK_POLLING=true  # Для hot reload через Docker
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    
+    # Ограничение ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner  # Production stage из multi-stage build
+      cache_from:
+        - app-prod:latest
+    image: app-prod:latest
+    container_name: app-prod
+    restart: unless-stopped
+    
+    ports:
+      - "3002:3000"
+    
+    # В production НЕ используем volume mounting
+    # Все файлы запечатаны в образе
+    
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          memory: 512M
+
+# Опциональная сеть для изоляции
+networks:
+  default:
+    name: app-network

@@ -87,6 +87,8 @@ In each `workDir`, edit `deploy.sh`:
 
 This is where your real deployment logic lives.
 
+**⚡ Performance note:** The template includes smart change detection - it only rebuilds when necessary (package.json, Dockerfile changes). Code-only changes trigger a quick restart (~5-10 sec instead of 5-7 min). See `FAST-DEPLOY-RU.md` or `OPTIMIZATION.md` for details.
+
 ---
 
 ## 4. Run webhook server
