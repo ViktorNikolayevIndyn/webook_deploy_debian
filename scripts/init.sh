@@ -155,7 +155,7 @@ append_project_to_config() {
     --arg deployMode "$deployMode" \
     --arg rootDomain "$rootDomain" \
     --arg subdomain "$subdomain" \
-    --argjson port "$port" \
+    --arg port "$port" \
     --arg localPath "$localPath" \
     --arg protocol "$protocol" \
     --arg tunnelName "$tunnelName" \
@@ -167,12 +167,12 @@ append_project_to_config() {
       branch: $branch,
       workDir: $workDir,
       deployScript: ($workDir + "/deploy.sh"),
-      deployArgs: (if $deployMode == "static" then [$port] else [$deployMode] end),
+      deployArgs: (if $deployMode == "static" then [($port | tostring)] else [$deployMode] end),
       cloudflare: {
         enabled: true,
         rootDomain: $rootDomain,
         subdomain: $subdomain,
-        localPort: $port,
+        localPort: ($port | tonumber),
         localPath: $localPath,
         protocol: $protocol,
         tunnelName: $tunnelName
@@ -481,11 +481,23 @@ while true; do
     fi
   done
 
-  PORT=$(prompt "Local port (container/service port on host)" "3000")
-  if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    echo "Invalid port, using 3000."
-    PORT=3000
+  # Default port based on project type
+  if [ "$PROJECT_TYPE" = "2" ]; then
+    DEFAULT_PORT="3005"
+  else
+    DEFAULT_PORT="3000"
   fi
+  
+  PORT=$(prompt "Local port (container/service port on host)" "$DEFAULT_PORT")
+  
+  # Validate and ensure PORT is a number
+  if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ -z "$PORT" ]; then
+    echo "Invalid port, using $DEFAULT_PORT."
+    PORT="$DEFAULT_PORT"
+  fi
+  
+  # Ensure PORT is always a valid number for jq
+  PORT="${PORT:-$DEFAULT_PORT}"
 
   while true; do
     LOCAL_PATH=$(prompt "Local path (for Cloudflare service, usually /)" "/")
