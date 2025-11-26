@@ -133,6 +133,7 @@ ensure_deploy_script() {
   local name="$1"
   local workDir="$2"
   local deployScript="$3"
+  local deployArgs="$4"  # Check if first arg is a port number (static project)
 
   # если не задан путь — дефолт
   if [ -z "$deployScript" ] || [ "$deployScript" = "null" ]; then
@@ -140,11 +141,22 @@ ensure_deploy_script() {
   fi
 
   if [ ! -f "$deployScript" ]; then
+    # Determine project type by checking if deployArgs is a port number
+    local templateFile="$SCRIPT_DIR/deploy.template.sh"
+    
+    if [[ "$deployArgs" =~ ^[0-9]+$ ]]; then
+      # Static project (deployArgs is a port number)
+      if [ -f "$SCRIPT_DIR/deploy-static.template.sh" ]; then
+        templateFile="$SCRIPT_DIR/deploy-static.template.sh"
+        echo "[deploy] Static project detected, using deploy-static.template.sh..." >&2
+      fi
+    fi
+    
     # если есть шаблон – копируем
-    if [ -f "$SCRIPT_DIR/deploy.template.sh" ]; then
+    if [ -f "$templateFile" ]; then
       echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
       mkdir -p "$workDir"
-      cp "$SCRIPT_DIR/deploy.template.sh" "$deployScript"
+      cp "$templateFile" "$deployScript"
       chmod +x "$deployScript"
     else
       echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
@@ -236,7 +248,9 @@ for i in $(seq 0 $((projects_count - 1))); do
   fi
 
   # 2) гарантируем наличие deploy.sh
-  script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript") || {
+  # Pass first deployArg to detect static projects
+  firstArg="${deployArgs[0]:-}"
+  script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript" "$firstArg") || {
     echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
     echo
     continue

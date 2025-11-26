@@ -155,8 +155,13 @@ For each **project**, `init.sh` asks:
   (you can also use `https://...` but SSH is recommended).
 - `branch` – e.g. `"dev-branch-cloud"` or `"prod-main"`.
 - `workDir` – path on the server, e.g. `"/opt/linkify-dev"`.
+- **`projectType`** – new in v1.1:
+  - `1` = Docker application (Next.js, Node.js) → uses `deploy.template.sh`
+  - `2` = Static files (HTML/CSS/JS) → uses `deploy-static.template.sh`
 - `deployScript` – auto‑filled: `<workDir>/deploy.sh` (copied from template).
-- `deployArgs` – array of extra arguments for deploy script, e.g. `["dev"]` or `["prod"]`.
+- `deployArgs` – array of extra arguments:
+  - Docker projects: `["dev"]` or `["prod"]` (mode)
+  - Static projects: `["3005"]` (port for Python HTTP server)
 - `cloudflare` – project‑specific domain mapping:
   - `rootDomain` – e.g. `"linkify.cloud"`.
   - `subdomain` – e.g. `"dev"` or `"app"`.
@@ -205,8 +210,40 @@ Example excerpt for two projects:
       "tunnelName": "linkify.cloud"
     }
   }
-]
+],
+
+### 4.3. Static project example
+
+For static HTML/CSS/JS projects:
+
+```json
+{
+  "name": "staticpage",
+  "gitUrl": "git@github.com:USER/staticpage.git",
+  "repo": "USER/staticpage",
+  "branch": "main",
+  "workDir": "/opt/staticpage",
+  "deployScript": "/opt/staticpage/deploy.sh",
+  "deployArgs": ["3005"],
+  "cloudflare": {
+    "enabled": true,
+    "rootDomain": "linkify.cloud",
+    "subdomain": "static",
+    "localPort": 3005,
+    "localPath": "/",
+    "protocol": "http",
+    "tunnelName": "linkify.cloud"
+  }
+}
 ```
+
+**Key differences:**
+- `deployArgs: ["3005"]` - port number instead of mode
+- Uses `deploy-static.template.sh` - serves files via Python HTTP server
+- No Docker build/restart - just git pull + restart server
+- **Deploy time: 2-5 seconds** (instant for unchanged files)
+
+See `STATIC-DEPLOY.md` for detailed static project documentation.
 
 ---
 
