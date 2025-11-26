@@ -236,7 +236,7 @@ echo
 echo "🔧 Useful commands:"
 echo "  - Check environment  : ./scripts/check_env.sh"
 echo "  - Fix permissions    : sudo ./scripts/fix_permissions.sh"
-echo "  - Apply optimizations: sudo ./scripts/apply_optimizations.sh"
+echo "  - Optimizations already included in deploy.template.sh"
 echo "  - Restart webhook    : sudo systemctl restart webhook-deploy.service"
 echo "  - View logs          : journalctl -u webhook-deploy.service -f"
 echo

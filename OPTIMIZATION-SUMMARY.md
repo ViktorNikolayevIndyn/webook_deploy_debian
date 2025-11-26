@@ -17,7 +17,7 @@
 
 ```bash
 cd /opt/webook_deploy_debian
-sudo ./scripts/apply_optimizations.sh
+# Оптимизации уже встроены в deploy.template.sh
 ```
 
 Скрипт обновит все проекты из `config/projects.json`.
@@ -27,7 +27,7 @@ sudo ./scripts/apply_optimizations.sh
 ```bash
 cd /opt/your-project
 cp /opt/webook_deploy_debian/scripts/deploy.template.sh ./deploy.sh
-cp /opt/webook_deploy_debian/scripts/.dockerignore.example ./.dockerignore
+cp /opt/webook_deploy_debian/scripts/optimizations/.dockerignore ./.dockerignore
 chmod +x deploy.sh
 ```
 
@@ -80,10 +80,9 @@ volumes:
 ```
 scripts/
 ├── deploy.template.sh              ← Обновлен (умный деплой)
-├── Dockerfile.optimized            ← Multi-stage build
-├── docker-compose.optimized.yml    ← Volume mounting
-├── .dockerignore.example           ← Оптимизация build context
-├── apply_optimizations.sh          ← Автоприменение к проектам
+├── deploy.template.sh              ← Умный деплой (оптимизации встроены)
+
+├── optimizations/apply.sh          ← Автоприменение к проектам
 └── fix_permissions.sh              ← Исправление прав webuser
 
 FAST-DEPLOY-RU.md                   ← Русская инструкция

@@ -31,7 +31,7 @@ fi
 
 ---
 
-### 2. Multi-stage Dockerfile (Dockerfile.optimized)
+### 2. Multi-stage Dockerfile (scripts/optimizations/Dockerfile)
 
 **Преимущества:**
 - **Stage 1 (deps):** Кэширование node_modules - пересборка только при изменении package.json
@@ -48,7 +48,7 @@ fi
 
 ---
 
-### 3. Volume mounting для development (docker-compose.optimized.yml)
+### 3. Volume mounting для development (scripts/optimizations/docker-compose.yml)
 
 ```yaml
 services:
@@ -97,8 +97,8 @@ services:
 
 Скрипты уже обновлены:
 - `scripts/deploy.template.sh` - умный деплой
-- `scripts/Dockerfile.optimized` - multi-stage build
-- `scripts/docker-compose.optimized.yml` - volume mounting
+- `deploy.template.sh` - умный деплой (уже включено)
+- Дополнительно: можно оптимизировать Dockerfile и docker-compose.yml
 
 ### Вариант 2: Вручную для существующих проектов
 
@@ -109,13 +109,13 @@ cp /opt/webook_deploy_debian/scripts/deploy.template.sh ./deploy.sh
 chmod +x deploy.sh
 
 # 2. Заменить Dockerfile
-cp /opt/webook_deploy_debian/scripts/Dockerfile.optimized ./Dockerfile
+# Оптимизации уже в deploy.template.sh
 
 # 3. Обновить docker-compose.yml
-cp /opt/webook_deploy_debian/scripts/docker-compose.optimized.yml ./docker-compose.yml
+
 
 # 4. Добавить .dockerignore
-cp /opt/webook_deploy_debian/scripts/.dockerignore.example ./.dockerignore
+
 
 # 5. Первый build (создаст кэш)
 docker compose build app-dev

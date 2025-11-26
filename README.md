@@ -269,8 +269,8 @@ See `OPTIMIZATION.md` for:
 
 **Quick start:**
 ```bash
-# Apply optimizations to existing projects
-./scripts/apply_optimizations.sh
+# Optimizations are already built into deploy.template.sh
+# Just use init.sh to configure new projects
 ```
 
 You control your real logic – the template is a starting point with best practices built-in.

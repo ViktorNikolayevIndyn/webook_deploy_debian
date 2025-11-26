@@ -54,38 +54,18 @@ else:
 
 ### Для существующих проектов
 
-```bash
-# 1. Применить оптимизации ко всем проектам
-cd /opt/webook_deploy_debian
-sudo ./scripts/apply_optimizations.sh
-
-# Скрипт спросит для каждого проекта:
-# - Обновить deploy.sh? [Y/n]
-# - Заменить Dockerfile? [y/N]  
-# - Заменить docker-compose.yml? [y/N]
-# - Создать .dockerignore? [Y/n]
-# - Пересобрать образы для кэша? [y/N]
-```
-
-### Ручная установка (один проект)
+Оптимизации уже встроены в `deploy.template.sh`. Просто обновите deploy.sh:
 
 ```bash
-cd /opt/linkify-dev
+cd /opt/your-project
 
-# 1. Обновить deploy.sh
+# Обновить deploy.sh с оптимизациями
 cp /opt/webook_deploy_debian/scripts/deploy.template.sh ./deploy.sh
 chmod +x deploy.sh
 
-# 2. (Опционально) Заменить Dockerfile
-cp /opt/webook_deploy_debian/scripts/Dockerfile.optimized ./Dockerfile
-# ⚠ Проверь и адаптируй под свой проект!
+# Готово! Следующий git push будет быстрым
 
-# 3. (Опционально) Обновить docker-compose.yml
-cp /opt/webook_deploy_debian/scripts/docker-compose.optimized.yml ./docker-compose.yml
-# ⚠ Проверь порты и пути volumes!
 
-# 4. Создать .dockerignore
-cp /opt/webook_deploy_debian/scripts/.dockerignore.example ./.dockerignore
 
 # 5. Первый build для создания кэша
 docker compose build app-dev
@@ -155,7 +135,7 @@ journalctl -u webhook-deploy.service -f
 3. Анализ измененных файлов
 4. Умный выбор: restart или build
 
-### Dockerfile.optimized
+### Dockerfile
 
 **Multi-stage build:**
 - Stage 1: Установка dependencies (кэшируется)
@@ -166,7 +146,7 @@ journalctl -u webhook-deploy.service -f
 - Размер образа: 1.5GB → 200MB
 - Время build при изменении кода: 5 мин → 1 мин
 
-### docker-compose.optimized.yml
+### docker-compose.yml
 
 **Для development:**
 ```yaml
