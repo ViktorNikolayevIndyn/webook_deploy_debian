@@ -118,6 +118,30 @@ append_project_to_config() {
   local localPath="${10}"
   local protocol="${11}"
   local tunnelName="${12}"
+  
+  # Copy appropriate deploy template
+  local templateFile
+  if [ "$deployMode" = "static" ]; then
+    templateFile="$SCRIPT_DIR/deploy-static.template.sh"
+  else
+    templateFile="$DEPLOY_TEMPLATE"
+  fi
+  
+  if [ -f "$templateFile" ]; then
+    echo "[init] Copying deploy template: $templateFile -> $workDir/deploy.sh"
+    mkdir -p "$workDir"
+    cp "$templateFile" "$workDir/deploy.sh"
+    chmod +x "$workDir/deploy.sh"
+    
+    # Set ownership if possible
+    if [ -f "$SSH_STATE" ] && command -v jq >/dev/null 2>&1; then
+      local appUser
+      appUser="$(jq -r '.sshUser // empty' "$SSH_STATE" 2>/dev/null || echo 'webuser')"
+      if [ -n "$appUser" ] && id "$appUser" >/dev/null 2>&1; then
+        chown -R "$appUser:$appUser" "$workDir" 2>/dev/null || true
+      fi
+    fi
+  fi
 
   local tmp
   tmp="$(mktemp)"
@@ -143,7 +167,7 @@ append_project_to_config() {
       branch: $branch,
       workDir: $workDir,
       deployScript: ($workDir + "/deploy.sh"),
-      deployArgs: [ $deployMode ],
+      deployArgs: (if $deployMode == "static" then [$port] else [$deployMode] end),
       cloudflare: {
         enabled: true,
         rootDomain: $rootDomain,
@@ -431,7 +455,19 @@ while true; do
   DEFAULT_WORKDIR="/opt/${PROJECT_NAME}"
   WORKDIR=$(prompt "Project workDir on server" "$DEFAULT_WORKDIR")
 
-  DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "dev")
+  # Ask project type
+  echo
+  echo "Project type:"
+  echo "  1) Docker application (Next.js, Node.js, etc.)"
+  echo "  2) Static files (HTML/CSS/JS with Python HTTP server)"
+  PROJECT_TYPE=$(prompt "Select project type [1/2]" "1")
+  
+  if [ "$PROJECT_TYPE" = "2" ]; then
+    DEPLOY_MODE="static"
+    echo "[init] Using static files deployment (Python HTTP server)"
+  else
+    DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "dev")
+  fi
 
   ROOT_DOMAIN="$WEBHOOK_ROOT_DOMAIN"
   echo "Root domain for this project: $ROOT_DOMAIN (taken from webhook rootDomain)"
