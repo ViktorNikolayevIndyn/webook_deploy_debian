@@ -297,4 +297,12 @@ echo "[status] Listening TCP ports (common app ports):"
 ss -tln 2>/dev/null | awk 'NR==1 || /:300[0-9]/ || /:400[0-9]/ || /:500[0-9]/'
 
 echo
+echo "=== Fixing permissions ==="
+if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
+  "$SCRIPT_DIR/after_install_fix.sh"
+else
+  echo "[deploy_config] WARNING: after_install_fix.sh not found or not executable"
+fi
+
+echo
 echo "=== deploy_config.sh finished ==="
