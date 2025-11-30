@@ -341,8 +341,14 @@ if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
   if [ "$(id -u)" -eq 0 ]; then
     "$SCRIPT_DIR/after_install_fix.sh"
   else
-    echo "[deploy_config] Running after_install_fix.sh with sudo (needs root for chown)..."
-    sudo "$SCRIPT_DIR/after_install_fix.sh"
+    echo "[deploy_config] Checking if sudo works without password..."
+    if sudo -n true 2>/dev/null; then
+      echo "[deploy_config] Running after_install_fix.sh with sudo..."
+      sudo "$SCRIPT_DIR/after_install_fix.sh"
+    else
+      echo "[deploy_config] NOTE: sudo requires password (skipping permission fix)"
+      echo "[deploy_config] Run manually with root: sudo $SCRIPT_DIR/after_install_fix.sh"
+    fi
   fi
 else
   echo "[deploy_config] WARNING: after_install_fix.sh not found or not executable"
@@ -353,26 +359,38 @@ echo "=== Restarting webhook service ==="
 
 # Prepare sudo if not root
 SUDO_CMD=""
+CAN_USE_SUDO=0
+
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
-    SUDO_CMD="sudo"
+    if sudo -n true 2>/dev/null; then
+      SUDO_CMD="sudo"
+      CAN_USE_SUDO=1
+    else
+      echo "[deploy_config] NOTE: sudo requires password (skipping service restart)"
+      echo "[deploy_config] Restart manually: sudo systemctl restart webhook-deploy.service"
+    fi
   else
     echo "[deploy_config] WARNING: Not running as root and sudo not available"
   fi
+else
+  CAN_USE_SUDO=1
 fi
 
-if $SUDO_CMD systemctl is-active --quiet webhook-deploy.service 2>/dev/null; then
-  echo "[deploy_config] Restarting webhook-deploy.service..."
-  $SUDO_CMD systemctl restart webhook-deploy.service
-  sleep 2
-  if $SUDO_CMD systemctl is-active --quiet webhook-deploy.service; then
-    echo "[deploy_config] ✓ webhook-deploy.service restarted successfully"
+if [ "$CAN_USE_SUDO" -eq 1 ]; then
+  if $SUDO_CMD systemctl is-active --quiet webhook-deploy.service 2>/dev/null; then
+    echo "[deploy_config] Restarting webhook-deploy.service..."
+    $SUDO_CMD systemctl restart webhook-deploy.service
+    sleep 2
+    if $SUDO_CMD systemctl is-active --quiet webhook-deploy.service; then
+      echo "[deploy_config] ✓ webhook-deploy.service restarted successfully"
+    else
+      echo "[deploy_config] ✗ ERROR: webhook-deploy.service failed to start"
+      $SUDO_CMD systemctl status webhook-deploy.service --no-pager -n 10
+    fi
   else
-    echo "[deploy_config] ✗ ERROR: webhook-deploy.service failed to start"
-    $SUDO_CMD systemctl status webhook-deploy.service --no-pager -n 10
+    echo "[deploy_config] NOTE: webhook-deploy.service not running"
   fi
-else
-  echo "[deploy_config] NOTE: webhook-deploy.service not running (will be started by install.sh or manually)"
 fi
 
 echo
