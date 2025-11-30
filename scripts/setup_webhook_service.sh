@@ -93,17 +93,25 @@ echo
 echo "[webhook-setup] GitHub Status API Setup (optional)"
 echo "[webhook-setup] ─────────────────────────────────────"
 
-# Проверяем есть ли токен в config или файле
+# Проверяем есть ли непустой токен в config или файле
 EXISTING_TOKEN=""
+TOKEN_CONFIGURED=0
+
 if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
-  EXISTING_TOKEN=$(jq -r '.webhook.githubToken // empty' "$CONFIG_FILE" 2>/dev/null)
+  EXISTING_TOKEN=$(jq -r '.webhook.githubToken // empty' "$CONFIG_FILE" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$EXISTING_TOKEN" ] && [ "$EXISTING_TOKEN" != "null" ] && [ "$EXISTING_TOKEN" != '""' ]; then
+    TOKEN_CONFIGURED=1
+  fi
 fi
 
-if [ -z "$EXISTING_TOKEN" ] && [ -f "$TOKEN_FILE" ]; then
+if [ $TOKEN_CONFIGURED -eq 0 ] && [ -f "$TOKEN_FILE" ]; then
   EXISTING_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$EXISTING_TOKEN" ]; then
+    TOKEN_CONFIGURED=1
+  fi
 fi
 
-if [ -n "$EXISTING_TOKEN" ]; then
+if [ $TOKEN_CONFIGURED -eq 1 ]; then
   echo "[webhook-setup] ✓ GitHub token already configured"
 else
   echo "[webhook-setup] To enable GitHub commit status updates, you need a Personal Access Token."
