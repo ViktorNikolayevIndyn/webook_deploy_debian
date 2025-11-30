@@ -23,26 +23,23 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
   
   if [ -n "$WEBHOOK_USER" ] && id "$WEBHOOK_USER" >/dev/null 2>&1; then
-    read -r -p "[deploy_config] Switch to user '$WEBHOOK_USER' and continue? [Y/n]: " SWITCH_USER
+    echo "[deploy_config] Options:"
+    echo "  Y - Switch to '$WEBHOOK_USER' (recommended for webhook operations)"
+    echo "  n - Continue as root (will fix permissions automatically)"
+    read -r -p "[deploy_config] Switch to user '$WEBHOOK_USER'? [Y/n]: " SWITCH_USER
     SWITCH_USER=${SWITCH_USER:-Y}
     
     if [[ "$SWITCH_USER" =~ ^[Yy]$ ]]; then
       echo "[deploy_config] Switching to '$WEBHOOK_USER'..."
       exec su - "$WEBHOOK_USER" -c "cd '$SCRIPT_DIR' && bash deploy_config.sh"
+    else
+      echo "[deploy_config] Continuing as root - permissions will be fixed automatically"
+      echo
     fi
+  else
+    echo "[deploy_config] No webhook user found, continuing as root"
+    echo
   fi
-  
-  read -r -p "[deploy_config] Continue as root? [y/N]: " CONTINUE_ROOT
-  CONTINUE_ROOT=${CONTINUE_ROOT:-N}
-  if [[ ! "$CONTINUE_ROOT" =~ ^[Yy]$ ]]; then
-    echo "[deploy_config] Aborted."
-    if [ -n "$WEBHOOK_USER" ]; then
-      echo "[deploy_config] Run as: sudo -u $WEBHOOK_USER $0"
-    fi
-    exit 1
-  fi
-  echo "[deploy_config] Continuing as root (you may need to fix permissions later)"
-  echo
 fi
 
 echo "[deploy_config] Current user: $(whoami)"
