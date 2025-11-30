@@ -2,6 +2,7 @@
 // Simple GitHub webhook -> deploy runner with /health endpoint
 
 const http = require("http");
+const https = require("https");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -208,7 +209,7 @@ function sendGitHubStatus(repo, sha, state, description, context) {
     },
   };
 
-  const req = http.request(options, (res) => {
+  const req = https.request(options, (res) => {
     if (res.statusCode === 201) {
       console.log(`[github] Status updated: ${state} for ${repo}@${sha.substring(0, 7)}`);
     } else {
