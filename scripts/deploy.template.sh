@@ -148,7 +148,6 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./public:/app/public:ro
-      - ./app:/app/app:ro
     environment:
       - NODE_ENV=development
 EOF
