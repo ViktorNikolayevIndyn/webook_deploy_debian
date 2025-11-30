@@ -127,20 +127,11 @@ append_project_to_config() {
     templateFile="$DEPLOY_TEMPLATE"
   fi
   
+  # Note: deploy.sh will be created by deploy_config.sh after git clone
+  # Don't create workDir or copy deploy.sh here to avoid "directory not empty" errors
   if [ -f "$templateFile" ]; then
-    echo "[init] Copying deploy template: $templateFile -> $workDir/deploy.sh"
-    mkdir -p "$workDir"
-    cp "$templateFile" "$workDir/deploy.sh"
-    chmod +x "$workDir/deploy.sh"
-    
-    # Set ownership if possible
-    if [ -f "$SSH_STATE" ] && command -v jq >/dev/null 2>&1; then
-      local appUser
-      appUser="$(jq -r '.sshUser // empty' "$SSH_STATE" 2>/dev/null || echo 'webuser')"
-      if [ -n "$appUser" ] && id "$appUser" >/dev/null 2>&1; then
-        chown -R "$appUser:$appUser" "$workDir" 2>/dev/null || true
-      fi
-    fi
+    echo "[init] Deploy template ready: $templateFile"
+    echo "[init] Will be copied to $workDir/deploy.sh during first deployment"
   fi
 
   local tmp
