@@ -305,4 +305,20 @@ else
 fi
 
 echo
+echo "=== Restarting webhook service ==="
+if systemctl is-active --quiet webhook-deploy.service; then
+  echo "[deploy_config] Restarting webhook-deploy.service..."
+  systemctl restart webhook-deploy.service
+  sleep 2
+  if systemctl is-active --quiet webhook-deploy.service; then
+    echo "[deploy_config] ✓ webhook-deploy.service restarted successfully"
+  else
+    echo "[deploy_config] ✗ ERROR: webhook-deploy.service failed to start"
+    systemctl status webhook-deploy.service --no-pager -n 10
+  fi
+else
+  echo "[deploy_config] NOTE: webhook-deploy.service not running (will be started by install.sh or manually)"
+fi
+
+echo
 echo "=== deploy_config.sh finished ==="
