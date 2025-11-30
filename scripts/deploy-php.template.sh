@@ -107,36 +107,56 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # Copy application files
 COPY . .
 
-# Install dependencies
-RUN composer install --no-interaction --optimize-autoloader --no-dev || composer install --no-interaction
-
-# Create necessary directories
+# Create necessary directories first
 RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views \
-    && chmod -R 775 storage bootstrap/cache
+    && chmod -R 775 storage \
+    && if [ -d bootstrap/cache ]; then chmod -R 775 bootstrap/cache; fi
 
-# Configure nginx
-RUN echo 'server { \
-    listen 80; \
-    root /app/public; \
-    index index.php; \
-    location / { \
-        try_files $uri $uri/ /index.php?$query_string; \
-    } \
-    location ~ \.php$ { \
-        fastcgi_pass 127.0.0.1:9000; \
-        fastcgi_index index.php; \
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; \
-        include fastcgi_params; \
-    } \
-}' > /etc/nginx/http.d/default.conf
+# Install dependencies
+RUN if [ -f composer.json ]; then \
+        composer install --no-interaction --optimize-autoloader --no-dev || composer install --no-interaction; \
+    else \
+        echo "No composer.json found"; \
+    fi
+
+# Configure nginx for Lumen/Laravel
+RUN echo "server {" > /etc/nginx/http.d/default.conf && \
+    echo "    listen 80;" >> /etc/nginx/http.d/default.conf && \
+    echo "    root /app/public;" >> /etc/nginx/http.d/default.conf && \
+    echo "    index index.php;" >> /etc/nginx/http.d/default.conf && \
+    echo "" >> /etc/nginx/http.d/default.conf && \
+    echo "    location / {" >> /etc/nginx/http.d/default.conf && \
+    echo "        try_files \$uri \$uri/ /index.php?\$query_string;" >> /etc/nginx/http.d/default.conf && \
+    echo "    }" >> /etc/nginx/http.d/default.conf && \
+    echo "" >> /etc/nginx/http.d/default.conf && \
+    echo "    location ~ \.php\$ {" >> /etc/nginx/http.d/default.conf && \
+    echo "        fastcgi_pass 127.0.0.1:9000;" >> /etc/nginx/http.d/default.conf && \
+    echo "        fastcgi_index index.php;" >> /etc/nginx/http.d/default.conf && \
+    echo "        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;" >> /etc/nginx/http.d/default.conf && \
+    echo "        include fastcgi_params;" >> /etc/nginx/http.d/default.conf && \
+    echo "    }" >> /etc/nginx/http.d/default.conf && \
+    echo "}" >> /etc/nginx/http.d/default.conf
 
 # Configure supervisor to run nginx and php-fpm
-RUN echo '[supervisord]' > /etc/supervisord.conf && \
-    echo 'nodaemon=true' >> /etc/supervisord.conf && \
-    echo '[program:php-fpm]' >> /etc/supervisord.conf && \
-    echo 'command=php-fpm' >> /etc/supervisord.conf && \
-    echo '[program:nginx]' >> /etc/supervisord.conf && \
-    echo 'command=nginx -g "daemon off;"' >> /etc/supervisord.conf
+RUN echo "[supervisord]" > /etc/supervisord.conf && \
+    echo "nodaemon=true" >> /etc/supervisord.conf && \
+    echo "user=root" >> /etc/supervisord.conf && \
+    echo "" >> /etc/supervisord.conf && \
+    echo "[program:php-fpm]" >> /etc/supervisord.conf && \
+    echo "command=php-fpm -F" >> /etc/supervisord.conf && \
+    echo "stdout_logfile=/dev/stdout" >> /etc/supervisord.conf && \
+    echo "stdout_logfile_maxbytes=0" >> /etc/supervisord.conf && \
+    echo "stderr_logfile=/dev/stderr" >> /etc/supervisord.conf && \
+    echo "stderr_logfile_maxbytes=0" >> /etc/supervisord.conf && \
+    echo "autorestart=true" >> /etc/supervisord.conf && \
+    echo "" >> /etc/supervisord.conf && \
+    echo "[program:nginx]" >> /etc/supervisord.conf && \
+    echo "command=nginx -g \"daemon off;\"" >> /etc/supervisord.conf && \
+    echo "stdout_logfile=/dev/stdout" >> /etc/supervisord.conf && \
+    echo "stdout_logfile_maxbytes=0" >> /etc/supervisord.conf && \
+    echo "stderr_logfile=/dev/stderr" >> /etc/supervisord.conf && \
+    echo "stderr_logfile_maxbytes=0" >> /etc/supervisord.conf && \
+    echo "autorestart=true" >> /etc/supervisord.conf
 
 EXPOSE 80
 
