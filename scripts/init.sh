@@ -119,13 +119,19 @@ append_project_to_config() {
   local protocol="${11}"
   local tunnelName="${12}"
   
-  # Copy appropriate deploy template
+  # Copy appropriate deploy template based on project type
   local templateFile
-  if [ "$deployMode" = "static" ]; then
-    templateFile="$SCRIPT_DIR/deploy-static.template.sh"
-  else
-    templateFile="$DEPLOY_TEMPLATE"
-  fi
+  case "$deployMode" in
+    static)
+      templateFile="$SCRIPT_DIR/deploy-static.template.sh"
+      ;;
+    php|lumen|laravel)
+      templateFile="$SCRIPT_DIR/deploy-php.template.sh"
+      ;;
+    *)
+      templateFile="$DEPLOY_TEMPLATE"
+      ;;
+  esac
   
   # Note: deploy.sh will be created by deploy_config.sh after git clone
   # Don't create workDir or copy deploy.sh here to avoid "directory not empty" errors
@@ -137,6 +143,9 @@ append_project_to_config() {
   local tmp
   tmp="$(mktemp)"
 
+  local templateName
+  templateName="$(basename "$templateFile")"
+  
   jq \
     --arg name "$name" \
     --arg gitUrl "$gitUrl" \
@@ -144,6 +153,7 @@ append_project_to_config() {
     --arg branch "$branch" \
     --arg workDir "$workDir" \
     --arg deployMode "$deployMode" \
+    --arg templateName "$templateName" \
     --arg rootDomain "$rootDomain" \
     --arg subdomain "$subdomain" \
     --arg port "$port" \
@@ -159,6 +169,7 @@ append_project_to_config() {
       workDir: $workDir,
       deployScript: ($workDir + "/deploy.sh"),
       deployArgs: (if $deployMode == "static" then [($port | tostring)] else [$deployMode] end),
+      deployTemplate: $templateName,
       cloudflare: {
         enabled: true,
         rootDomain: $rootDomain,
