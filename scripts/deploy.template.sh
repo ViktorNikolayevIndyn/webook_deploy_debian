@@ -91,7 +91,9 @@ fi
 if [ ! -f "$COMPOSE_FILE" ]; then
   echo "[deploy] $COMPOSE_FILE not found – generating basic compose file..."
 
-  cat > "$COMPOSE_FILE" <<EOF
+  # Для dev режима - монтируем код как volume для hot reload
+  if [ "$MODE" = "dev" ]; then
+    cat > "$COMPOSE_FILE" <<EOF
 services:
   ${APP_NAME}-${MODE:-app}:
     build:
@@ -100,7 +102,28 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT}:3000"
+    volumes:
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+      - ./app:/app/app:ro
+    environment:
+      - NODE_ENV=development
 EOF
+  else
+    # Для production - обычный build без volumes
+    cat > "$COMPOSE_FILE" <<EOF
+services:
+  ${APP_NAME}-${MODE:-app}:
+    build:
+      context: .
+    container_name: ${APP_NAME}-${MODE:-app}
+    restart: unless-stopped
+    ports:
+      - "${PORT}:3000"
+    environment:
+      - NODE_ENV=production
+EOF
+  fi
 
   echo "[deploy] $COMPOSE_FILE generated."
 else
