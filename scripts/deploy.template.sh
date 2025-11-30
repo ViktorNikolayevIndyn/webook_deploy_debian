@@ -135,7 +135,13 @@ echo "[deploy] Checking if rebuild is needed..."
 
 # Проверяем, изменились ли файлы
 NEEDS_BUILD=0
-BUILD_TYPE="full"
+USE_VOLUMES=0
+
+# Проверяем используются ли volumes в docker-compose.yml (для dev режима)
+if [ -f "$COMPOSE_FILE" ] && grep -q "volumes:" "$COMPOSE_FILE"; then
+  USE_VOLUMES=1
+  echo "[deploy] Using volumes - hot reload enabled"
+fi
 
 # Если есть git, проверяем измененные файлы
 if [ -d ".git" ] && [ -n "$BEFORE_COMMIT" ] && [ -n "$AFTER_COMMIT" ]; then
@@ -145,19 +151,19 @@ if [ -d ".git" ] && [ -n "$BEFORE_COMMIT" ] && [ -n "$AFTER_COMMIT" ]; then
     echo "[deploy] Changed files:"
     echo "$CHANGED_FILES" | sed 's/^/  - /'
     
-    # Для production режима - всегда rebuild при изменениях (Next.js требует пересборки)
-    if [ "$MODE" = "prod" ]; then
-      echo "[deploy] ⚠ Production mode - rebuild required for any changes"
-      NEEDS_BUILD=1
-    else
-      # Для dev режима - проверяем только критичные файлы
+    # Для dev режима с volumes - только restart (файлы обновятся через volume mount)
+    if [ "$USE_VOLUMES" -eq 1 ]; then
       if echo "$CHANGED_FILES" | grep -qE '^(package.*\.json|Dockerfile|.*\.lock|tsconfig\.json|next\.config\.js|tailwind\.config\.)'; then
-        echo "[deploy] ⚠ Critical files changed - full rebuild needed"
+        echo "[deploy] ⚠ Critical files changed - rebuild needed even with volumes"
         NEEDS_BUILD=1
       else
-        echo "[deploy] ✓ Only source files changed in dev mode - quick restart"
+        echo "[deploy] ✓ Source files changed - volumes will sync automatically, restart only"
         NEEDS_BUILD=0
       fi
+    else
+      # Для prod режима без volumes - всегда rebuild (Next.js требует пересборки)
+      echo "[deploy] ⚠ Production mode (no volumes) - rebuild required for any changes"
+      NEEDS_BUILD=1
     fi
   else
     echo "[deploy] No file changes detected"
