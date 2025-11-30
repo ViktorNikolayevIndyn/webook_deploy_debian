@@ -131,21 +131,37 @@ if [ "$SHOULD_RESTART" -eq 1 ]; then
     # Find PID using the port
     PORT_PID=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
     
+    # Check if we need sudo (process owned by different user)
+    USE_SUDO=""
+    if [ -n "$PORT_PID" ]; then
+      PROC_USER=$(ps -o user= -p "$PORT_PID" 2>/dev/null || echo "")
+      CURRENT_USER=$(whoami)
+      if [ -n "$PROC_USER" ] && [ "$PROC_USER" != "$CURRENT_USER" ]; then
+        echo "[deploy-static] Process owned by '$PROC_USER', current user is '$CURRENT_USER'"
+        if command -v sudo >/dev/null 2>&1; then
+          USE_SUDO="sudo"
+          echo "[deploy-static] Using sudo to kill process..."
+        else
+          echo "[deploy-static] WARNING: Cannot kill process owned by another user (sudo not available)"
+        fi
+      fi
+    fi
+    
     if [ -n "$PORT_PID" ]; then
       echo "[deploy-static] Found process PID: $PORT_PID"
       # Try graceful kill first
-      kill "$PORT_PID" 2>/dev/null || true
+      $USE_SUDO kill "$PORT_PID" 2>/dev/null || true
       sleep 1
       
       # If still running, force kill
       if kill -0 "$PORT_PID" 2>/dev/null; then
         echo "[deploy-static] Process still running, force killing..."
-        kill -9 "$PORT_PID" 2>/dev/null || true
+        $USE_SUDO kill -9 "$PORT_PID" 2>/dev/null || true
         sleep 2
       fi
     else
       echo "[deploy-static] Cannot find PID, trying pkill..."
-      pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
+      $USE_SUDO pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
       sleep 2
     fi
     
@@ -154,6 +170,7 @@ if [ "$SHOULD_RESTART" -eq 1 ]; then
       echo "[deploy-static] ✗ ERROR: Cannot free port $PORT"
       echo "[deploy-static] Processes using port $PORT:"
       ss -tlnp 2>/dev/null | grep ":$PORT " || true
+      echo "[deploy-static] HINT: Kill manually with: sudo pkill -9 -f 'python3 -m http.server $PORT'"
       exit 1
     fi
     
