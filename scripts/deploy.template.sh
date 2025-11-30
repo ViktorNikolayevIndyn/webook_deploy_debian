@@ -22,9 +22,15 @@ if [ -d ".git" ]; then
   REMOTE_COMMIT=$(git rev-parse @{u} 2>/dev/null || echo "unknown")
   echo "[deploy] Remote commit: $REMOTE_COMMIT"
   
+  # Check if container exists before skipping deployment
+  CONTAINER_NAME="$(basename "$WORKDIR")-${MODE:-app}"
   if [ "$BEFORE_COMMIT" = "$REMOTE_COMMIT" ]; then
-    echo "[deploy] ✓ No changes detected - skipping deployment"
-    exit 0
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+      echo "[deploy] ✓ No changes detected and container exists - skipping deployment"
+      exit 0
+    else
+      echo "[deploy] ⚠ No changes but container missing - will deploy"
+    fi
   fi
   
   echo "[deploy] Changes detected - pulling..."
