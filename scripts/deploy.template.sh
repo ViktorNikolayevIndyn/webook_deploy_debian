@@ -29,11 +29,16 @@ if [ -d ".git" ]; then
   # Check if container exists before skipping deployment
   CONTAINER_NAME="$(basename "$WORKDIR")-${MODE:-app}"
   if [ "$BEFORE_COMMIT" = "$REMOTE_COMMIT" ]; then
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-      echo "[deploy] ✓ No changes detected and container exists - skipping deployment"
-      exit 0
+    # Skip deployment only if not force mode
+    if [[ "$FORCE_RECREATE" != "force" ]]; then
+      if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        echo "[deploy] ✓ No changes detected and container exists - skipping deployment"
+        exit 0
+      else
+        echo "[deploy] ⚠ No changes but container missing - will deploy"
+      fi
     else
-      echo "[deploy] ⚠ No changes but container missing - will deploy"
+      echo "[deploy] Force mode enabled - will rebuild even without git changes"
     fi
   fi
   
@@ -89,8 +94,8 @@ RUN npm ci
 # Копируем исходники (volumes will override in compose)
 COPY . .
 
-# Dev mode - запускаем next dev
-CMD ["npm", "run", "dev"]
+# Dev mode - запускаем next dev напрямую
+CMD ["npx", "next", "dev", "-p", "3000"]
 EOF
   else
     # Для production - build и start
