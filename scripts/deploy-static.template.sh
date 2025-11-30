@@ -119,39 +119,40 @@ if [ "$SHOULD_RESTART" -eq 1 ]; then
   fi
 
   # Check if port is already in use and kill process
-if ss -tln 2>/dev/null | grep -q ":$PORT "; then
-  echo "[deploy-static] WARNING: Port $PORT already in use, killing process..."
-  
-  # Find PID using the port
-  PORT_PID=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
-  
-  if [ -n "$PORT_PID" ]; then
-    echo "[deploy-static] Found process PID: $PORT_PID"
-    # Try graceful kill first
-    kill "$PORT_PID" 2>/dev/null || true
-    sleep 1
+  if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+    echo "[deploy-static] WARNING: Port $PORT already in use, killing process..."
     
-    # If still running, force kill
-    if kill -0 "$PORT_PID" 2>/dev/null; then
-      echo "[deploy-static] Process still running, force killing..."
-      kill -9 "$PORT_PID" 2>/dev/null || true
+    # Find PID using the port
+    PORT_PID=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
+    
+    if [ -n "$PORT_PID" ]; then
+      echo "[deploy-static] Found process PID: $PORT_PID"
+      # Try graceful kill first
+      kill "$PORT_PID" 2>/dev/null || true
+      sleep 1
+      
+      # If still running, force kill
+      if kill -0 "$PORT_PID" 2>/dev/null; then
+        echo "[deploy-static] Process still running, force killing..."
+        kill -9 "$PORT_PID" 2>/dev/null || true
+        sleep 2
+      fi
+    else
+      echo "[deploy-static] Cannot find PID, trying pkill..."
+      pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
       sleep 2
     fi
-  else
-    echo "[deploy-static] Cannot find PID, trying pkill..."
-    pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
-    sleep 2
+    
+    # Final check
+    if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+      echo "[deploy-static] ✗ ERROR: Cannot free port $PORT"
+      echo "[deploy-static] Processes using port $PORT:"
+      ss -tlnp 2>/dev/null | grep ":$PORT " || true
+      exit 1
+    fi
+    
+    echo "[deploy-static] Port $PORT freed successfully"
   fi
-  
-  # Final check
-  if ss -tln 2>/dev/null | grep -q ":$PORT "; then
-    echo "[deploy-static] ✗ ERROR: Cannot free port $PORT"
-    echo "[deploy-static] Processes using port $PORT:"
-    ss -tlnp 2>/dev/null | grep ":$PORT " || true
-    exit 1
-  fi
-  
-  echo "[deploy-static] Port $PORT freed successfully"
   
   nohup python3 -m http.server "$PORT" > "$WORKDIR/server.log" 2>&1 &
   SERVER_PID=$!
