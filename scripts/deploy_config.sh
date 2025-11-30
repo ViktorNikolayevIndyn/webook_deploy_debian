@@ -108,6 +108,11 @@ ensure_repo() {
       exit $rc
     fi
 
+    # Reset any local changes before pull
+    echo "[repo] Resetting local changes..."
+    git reset --hard HEAD
+    git clean -fd
+
     git pull origin "$branch"
     rc=$?
     if [ $rc -ne 0 ]; then

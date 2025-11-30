@@ -40,6 +40,12 @@ if [ -d ".git" ]; then
     fi
   else
     HAS_CHANGES=1
+    
+    # Reset any local changes (safe for static sites)
+    echo "[deploy-static] Resetting local changes..."
+    git reset --hard HEAD
+    git clean -fd
+    
     git pull --ff-only || {
       echo "[deploy-static] ERROR: git pull failed"
       exit 1
