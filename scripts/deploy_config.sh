@@ -144,6 +144,7 @@ ensure_deploy_script() {
   local workDir="$2"
   local deployScript="$3"
   local deployArgs="$4"  # Check if first arg is a port number (static project)
+  local deployTemplate="$5"  # Template name from projects.json
 
   # если не задан путь — дефолт
   if [ -z "$deployScript" ] || [ "$deployScript" = "null" ]; then
@@ -151,27 +152,37 @@ ensure_deploy_script() {
   fi
 
   if [ ! -f "$deployScript" ]; then
-    # Determine project type by checking if deployArgs is a port number
-    local templateFile="$SCRIPT_DIR/deploy.template.sh"
+    # Determine template to use
+    local templateFile=""
     
-    if [[ "$deployArgs" =~ ^[0-9]+$ ]]; then
+    # 1. Check if deployTemplate is specified in JSON
+    if [ -n "$deployTemplate" ] && [ "$deployTemplate" != "null" ]; then
+      templateFile="$SCRIPT_DIR/$deployTemplate"
+      echo "[deploy] Using deployTemplate from config: $deployTemplate" >&2
+    
+    # 2. Fallback: detect by deployArgs (legacy logic)
+    elif [[ "$deployArgs" =~ ^[0-9]+$ ]]; then
       # Static project (deployArgs is a port number)
-      if [ -f "$SCRIPT_DIR/deploy-static.template.sh" ]; then
-        templateFile="$SCRIPT_DIR/deploy-static.template.sh"
-        echo "[deploy] Static project detected, using deploy-static.template.sh..." >&2
-      fi
+      templateFile="$SCRIPT_DIR/deploy-static.template.sh"
+      echo "[deploy] Static project detected (port-only arg), using deploy-static.template.sh..." >&2
+    
+    # 3. Default to Node.js/Docker template
+    else
+      templateFile="$SCRIPT_DIR/deploy.template.sh"
+      echo "[deploy] Using default deploy.template.sh..." >&2
     fi
     
-    # если есть шаблон – копируем
-    if [ -f "$templateFile" ]; then
-      echo "[deploy] deploy.sh not found for '$name', creating from template..." >&2
-      mkdir -p "$workDir"
-      cp "$templateFile" "$deployScript"
-      chmod +x "$deployScript"
-    else
-      echo "[deploy] ERROR: deploy script '$deployScript' not found and template missing." >&2
+    # Check if template exists
+    if [ ! -f "$templateFile" ]; then
+      echo "[deploy] ERROR: Template file not found: $templateFile" >&2
       return 1
     fi
+    
+    # Copy template to deploy.sh
+    echo "[deploy] Creating deploy.sh from template: $(basename "$templateFile")" >&2
+    mkdir -p "$workDir"
+    cp "$templateFile" "$deployScript"
+    chmod +x "$deployScript"
   else
     chmod +x "$deployScript"
   fi
@@ -214,6 +225,7 @@ for i in $(seq 0 $((projects_count - 1))); do
   branch=$(echo "$project_json"     | jq -r '.branch')
   workDir=$(echo "$project_json"    | jq -r '.workDir')
   deployScript=$(echo "$project_json" | jq -r '.deployScript // empty')
+  deployTemplate=$(echo "$project_json" | jq -r '.deployTemplate // empty')
 
   mapfile -t deployArgs < <(echo "$project_json" | jq -r '.deployArgs[]?')
 
@@ -226,6 +238,7 @@ for i in $(seq 0 $((projects_count - 1))); do
   echo "  Git URL  : $gitUrl"
   echo "  Branch   : $branch"
   echo "  Port     : $port"
+  echo "  Template : ${deployTemplate:-(auto-detect)}"
   echo "  Script   : ${deployScript:-$workDir/deploy.sh}"
   echo "  Args     : ${deployArgs[*]:-(none)}"
   echo
@@ -258,9 +271,9 @@ for i in $(seq 0 $((projects_count - 1))); do
   fi
 
   # 2) гарантируем наличие deploy.sh
-  # Pass first deployArg to detect static projects
+  # Pass first deployArg to detect static projects and deployTemplate from config
   firstArg="${deployArgs[0]:-}"
-  script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript" "$firstArg") || {
+  script_path=$(ensure_deploy_script "$name" "$workDir" "$deployScript" "$firstArg" "$deployTemplate") || {
     echo "[deploy_config] ERROR: cannot deploy '$name' (no deploy script)."
     echo
     continue
