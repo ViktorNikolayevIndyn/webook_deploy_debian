@@ -78,13 +78,19 @@ if [ -d "$CONFIG_DIR" ]; then
   echo "[after] Processing config directory: $CONFIG_DIR"
   echo "[after]  -> chown -R ${sshUser}:${primaryGroup} $CONFIG_DIR"
   chown -R "${sshUser}:${primaryGroup}" "$CONFIG_DIR"
-  echo "[after]  -> chmod 750 $CONFIG_DIR"
-  chmod 750 "$CONFIG_DIR"
+  echo "[after]  -> chmod 755 $CONFIG_DIR (readable by root and webuser)"
+  chmod 755 "$CONFIG_DIR"
   
-  # projects.json должен читаться webhook.js
+  # projects.json должен читаться webhook.js и root
   if [ -f "$PROJECTS_FILE" ]; then
-    echo "[after]  -> chmod 640 $PROJECTS_FILE"
-    chmod 640 "$PROJECTS_FILE"
+    echo "[after]  -> chmod 644 $PROJECTS_FILE"
+    chmod 644 "$PROJECTS_FILE"
+  fi
+  
+  # ssh_state.json тоже читается при установке
+  if [ -f "$SSH_STATE" ]; then
+    echo "[after]  -> chmod 644 $SSH_STATE"
+    chmod 644 "$SSH_STATE"
   fi
 fi
 echo

@@ -20,6 +20,45 @@ echo
 
 mkdir -p "$CONFIG_DIR"
 
+# --- Check/setup webuser and groups FIRST ---
+echo "[install] Checking webhook user and groups..."
+
+# Determine webhook user from existing config or use default
+WEBHOOK_USER="webuser"
+if [ -f "$SSH_STATE_FILE" ]; then
+    WEBHOOK_USER=$(jq -r '.sshUser // "webuser"' "$SSH_STATE_FILE" 2>/dev/null || echo "webuser")
+fi
+
+# Check if user exists
+if id "$WEBHOOK_USER" >/dev/null 2>&1; then
+    echo "[install] ✓ User '$WEBHOOK_USER' exists"
+    
+    # Check groups
+    NEEDS_GROUPS=0
+    if ! groups "$WEBHOOK_USER" | grep -q '\bsudo\b'; then
+        echo "[install] Adding '$WEBHOOK_USER' to sudo group..."
+        usermod -aG sudo "$WEBHOOK_USER"
+        NEEDS_GROUPS=1
+    fi
+    
+    if ! groups "$WEBHOOK_USER" | grep -q '\bdocker\b'; then
+        echo "[install] Adding '$WEBHOOK_USER' to docker group..."
+        usermod -aG docker "$WEBHOOK_USER"
+        NEEDS_GROUPS=1
+    fi
+    
+    if [ "$NEEDS_GROUPS" -eq 0 ]; then
+        echo "[install] ✓ User '$WEBHOOK_USER' already in sudo and docker groups"
+    else
+        echo "[install] ✓ Groups updated for '$WEBHOOK_USER'"
+    fi
+else
+    echo "[install] ⚠ User '$WEBHOOK_USER' does not exist"
+    echo "[install] Will be created during enable_ssh.sh"
+fi
+
+echo
+
 # --- Cleaned Function 1 ---
 ask_yes_no_default_yes() {
     local msg="$1"
@@ -207,30 +246,14 @@ else
     echo "[install] Skipping final ownership change: SSH user name could not be determined."
 fi
 
-if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
-  echo
-  echo "[install] Running after_install_fix.sh (fix permissions for project workDirs)..."
-  "$SCRIPT_DIR/after_install_fix.sh"
-else
-  echo
-  echo "[install] NOTE: after_install_fix.sh not found. Skipping permission fix."
-fi
-
-echo
-echo "=== install.sh finished ==="
-echo
-
 # Offer to switch to webhook user and run deploy_config.sh
 if [ -f "$SSH_STATE_FILE" ]; then
   SSH_USER=$(jq -r '.sshUser // empty' "$SSH_STATE_FILE" 2>/dev/null)
   
   if [ -n "$SSH_USER" ] && id "$SSH_USER" >/dev/null 2>&1; then
     echo "╔════════════════════════════════════════════════════════════════╗"
-    echo "║  IMPORTANT: Deploy projects as webhook user                   ║"
+    echo "║  Deploy projects as webhook user                              ║"
     echo "╚════════════════════════════════════════════════════════════════╝"
-    echo
-    echo "To avoid permission issues, projects should be deployed as the"
-    echo "same user that runs the webhook service: $SSH_USER"
     echo
     read -r -p "Switch to '$SSH_USER' and run deploy_config.sh now? [Y/n]: " SWITCH_USER
     SWITCH_USER=${SWITCH_USER:-Y}
@@ -239,11 +262,39 @@ if [ -f "$SSH_STATE_FILE" ]; then
       echo
       echo "[install] Switching to user '$SSH_USER' and running deploy_config.sh..."
       echo
-      exec su - "$SSH_USER" -c "cd '$SCRIPT_DIR' && bash deploy_config.sh"
+      # Run as SSH_USER, then return to root for final cleanup
+      su - "$SSH_USER" -c "cd '$SCRIPT_DIR' && bash deploy_config.sh"
+      
+      # Back to root - fix permissions and start services
+      echo
+      echo "=== Final cleanup (as root) ==="
+      
+      if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
+        echo "[install] Fixing all permissions..."
+        "$SCRIPT_DIR/after_install_fix.sh"
+      fi
+      
+      # Start/restart webhook service
+      if systemctl list-unit-files | grep -q webhook-deploy.service; then
+        echo "[install] Starting webhook-deploy.service..."
+        systemctl restart webhook-deploy.service
+        systemctl enable webhook-deploy.service
+        
+        if systemctl is-active --quiet webhook-deploy.service; then
+          echo "[install] ✓ Webhook service is running"
+        else
+          echo "[install] ✗ Webhook service failed to start"
+          systemctl status webhook-deploy.service --no-pager -n 10
+        fi
+      fi
+      
+      echo
+      echo "=== install.sh finished ==="
     else
       echo
-      echo "[install] Skipped. You can run it manually later:"
+      echo "[install] Skipped. Run manually:"
       echo "  sudo -u $SSH_USER $SCRIPT_DIR/deploy_config.sh"
+      echo "  sudo $SCRIPT_DIR/after_install_fix.sh"
     fi
   fi
 fi
