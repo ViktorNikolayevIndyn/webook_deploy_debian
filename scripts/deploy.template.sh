@@ -149,8 +149,8 @@ if [ "$NEEDS_BUILD" -eq 1 ]; then
   echo "[deploy] Running FULL BUILD: docker compose -f $COMPOSE_FILE build ${APP_NAME}-${MODE:-app}"
   docker compose -f "$COMPOSE_FILE" build "${APP_NAME}-${MODE:-app}"
   
-  echo "[deploy] Starting containers: docker compose -f $COMPOSE_FILE up -d ${APP_NAME}-${MODE:-app}"
-  docker compose -f "$COMPOSE_FILE" up -d "${APP_NAME}-${MODE:-app}"
+  echo "[deploy] Recreating containers: docker compose -f $COMPOSE_FILE up -d --force-recreate ${APP_NAME}-${MODE:-app}"
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate "${APP_NAME}-${MODE:-app}"
 else
   # Быстрый рестарт без build (только для dev mode с изменениями кода)
   echo "[deploy] Running QUICK RESTART: docker compose -f $COMPOSE_FILE restart ${APP_NAME}-${MODE:-app}"
