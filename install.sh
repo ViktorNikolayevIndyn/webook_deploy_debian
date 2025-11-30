@@ -274,18 +274,26 @@ if [ -f "$SSH_STATE_FILE" ]; then
         "$SCRIPT_DIR/after_install_fix.sh"
       fi
       
-      # Start/restart webhook service
+      # Create and start webhook service
       if systemctl list-unit-files | grep -q webhook-deploy.service; then
-        echo "[install] Starting webhook-deploy.service..."
+        echo "[install] Webhook service exists, restarting..."
         systemctl restart webhook-deploy.service
         systemctl enable webhook-deploy.service
-        
-        if systemctl is-active --quiet webhook-deploy.service; then
-          echo "[install] ✓ Webhook service is running"
+      else
+        echo "[install] Creating webhook service..."
+        if [ -x "$SCRIPT_DIR/setup_webhook_service.sh" ]; then
+          "$SCRIPT_DIR/setup_webhook_service.sh"
         else
-          echo "[install] ✗ Webhook service failed to start"
-          systemctl status webhook-deploy.service --no-pager -n 10
+          echo "[install] ✗ setup_webhook_service.sh not found"
         fi
+      fi
+      
+      # Check if service is running
+      if systemctl is-active --quiet webhook-deploy.service; then
+        echo "[install] ✓ Webhook service is running"
+      else
+        echo "[install] ✗ Webhook service failed to start"
+        systemctl status webhook-deploy.service --no-pager -n 10
       fi
       
       echo
