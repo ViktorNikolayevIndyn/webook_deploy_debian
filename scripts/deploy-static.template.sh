@@ -81,13 +81,27 @@ fi
 
 # 4. Start new server
 echo "[deploy-static] Starting Python HTTP server on port $PORT..."
+
+# Check if python3 is available
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[deploy-static] ✗ ERROR: python3 not found in PATH"
+  exit 1
+fi
+
+# Check if port is already in use
+if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+  echo "[deploy-static] WARNING: Port $PORT already in use, attempting to kill..."
+  pkill -f "python3 -m http.server $PORT" 2>/dev/null || true
+  sleep 1
+fi
+
 nohup python3 -m http.server "$PORT" > "$WORKDIR/server.log" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PID_FILE"
 
-sleep 1
+sleep 2
 
-# 4. Verify server is running
+# Verify server is running
 if kill -0 "$SERVER_PID" 2>/dev/null; then
   echo "[deploy-static] ✓ Server running (PID: $SERVER_PID)"
   echo "[deploy-static] ✓ Serving: $WORKDIR"
@@ -95,6 +109,8 @@ if kill -0 "$SERVER_PID" 2>/dev/null; then
   echo "[deploy-static] ✓ Logs: $WORKDIR/server.log"
 else
   echo "[deploy-static] ✗ ERROR: Failed to start server"
+  echo "[deploy-static] Last 10 lines from server.log:"
+  tail -n 10 "$WORKDIR/server.log" 2>/dev/null || echo "(no log file)"
   exit 1
 fi
 
