@@ -142,42 +142,55 @@ echo "[deploy] Checking if rebuild is needed..."
 # Проверяем, изменились ли файлы
 NEEDS_BUILD=0
 USE_VOLUMES=0
+CONTAINER_NAME="${APP_NAME}-${MODE:-app}"
 
-# Проверяем используются ли volumes в docker-compose.yml (для dev режима)
-if [ -f "$COMPOSE_FILE" ] && grep -q "volumes:" "$COMPOSE_FILE"; then
-  USE_VOLUMES=1
-  echo "[deploy] Using volumes - hot reload enabled"
+# Проверяем существует ли контейнер
+CONTAINER_EXISTS=0
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+  CONTAINER_EXISTS=1
 fi
 
-# Если есть git, проверяем измененные файлы
-if [ -d ".git" ] && [ -n "$BEFORE_COMMIT" ] && [ -n "$AFTER_COMMIT" ]; then
-  CHANGED_FILES=$(git diff --name-only "$BEFORE_COMMIT" "$AFTER_COMMIT" || echo "")
-  
-  if [ -n "$CHANGED_FILES" ]; then
-    echo "[deploy] Changed files:"
-    echo "$CHANGED_FILES" | sed 's/^/  - /'
+# Если контейнера нет - всегда build (первый запуск)
+if [ "$CONTAINER_EXISTS" -eq 0 ]; then
+  echo "[deploy] ⚠ Container not found - first deployment, building..."
+  NEEDS_BUILD=1
+else
+  # Проверяем используются ли volumes в docker-compose.yml (для dev режима)
+  if [ -f "$COMPOSE_FILE" ] && grep -q "volumes:" "$COMPOSE_FILE"; then
+    USE_VOLUMES=1
+    echo "[deploy] Using volumes - hot reload enabled"
+  fi
+
+  # Если есть git, проверяем измененные файлы
+  if [ -d ".git" ] && [ -n "$BEFORE_COMMIT" ] && [ -n "$AFTER_COMMIT" ]; then
+    CHANGED_FILES=$(git diff --name-only "$BEFORE_COMMIT" "$AFTER_COMMIT" || echo "")
     
-    # Для dev режима с volumes - только restart (файлы обновятся через volume mount)
-    if [ "$USE_VOLUMES" -eq 1 ]; then
-      if echo "$CHANGED_FILES" | grep -qE '^(package.*\.json|Dockerfile|.*\.lock|tsconfig\.json|next\.config\.js|tailwind\.config\.)'; then
-        echo "[deploy] ⚠ Critical files changed - rebuild needed even with volumes"
-        NEEDS_BUILD=1
+    if [ -n "$CHANGED_FILES" ]; then
+      echo "[deploy] Changed files:"
+      echo "$CHANGED_FILES" | sed 's/^/  - /'
+      
+      # Для dev режима с volumes - только restart (файлы обновятся через volume mount)
+      if [ "$USE_VOLUMES" -eq 1 ]; then
+        if echo "$CHANGED_FILES" | grep -qE '^(package.*\.json|Dockerfile|.*\.lock|tsconfig\.json|next\.config\.js|tailwind\.config\.)'; then
+          echo "[deploy] ⚠ Critical files changed - rebuild needed even with volumes"
+          NEEDS_BUILD=1
+        else
+          echo "[deploy] ✓ Source files changed - volumes will sync automatically, restart only"
+          NEEDS_BUILD=0
+        fi
       else
-        echo "[deploy] ✓ Source files changed - volumes will sync automatically, restart only"
-        NEEDS_BUILD=0
+        # Для prod режима без volumes - всегда rebuild (Next.js требует пересборки)
+        echo "[deploy] ⚠ Production mode (no volumes) - rebuild required for any changes"
+        NEEDS_BUILD=1
       fi
     else
-      # Для prod режима без volumes - всегда rebuild (Next.js требует пересборки)
-      echo "[deploy] ⚠ Production mode (no volumes) - rebuild required for any changes"
-      NEEDS_BUILD=1
+      echo "[deploy] No file changes detected"
     fi
   else
-    echo "[deploy] No file changes detected"
+    # Если нет git или это первый запуск - делаем build
+    echo "[deploy] First deployment or no git - full build required"
+    NEEDS_BUILD=1
   fi
-else
-  # Если нет git или это первый запуск - делаем build
-  echo "[deploy] First deployment or no git - full build required"
-  NEEDS_BUILD=1
 fi
 
 if [ "$NEEDS_BUILD" -eq 1 ]; then
