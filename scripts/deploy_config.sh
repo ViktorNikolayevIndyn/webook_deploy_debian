@@ -9,38 +9,8 @@ CONFIG_DIR="$ROOT_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/projects.json"
 SSH_STATE_FILE="$CONFIG_DIR/ssh_state.json"
 
-# Check if running as root - offer to switch to webhook user
-if [ "$(id -u)" -eq 0 ]; then
-  echo "[deploy_config] WARNING: Running as root!"
-  echo "[deploy_config] Recommendation: Run this script as the same user that runs webhook service."
-  echo "[deploy_config] This ensures all files have correct ownership for webhook operations."
-  echo
-  
-  # Try to read webhook user from config
-  WEBHOOK_USER=""
-  if [ -f "$SSH_STATE_FILE" ]; then
-    WEBHOOK_USER=$(jq -r '.sshUser // empty' "$SSH_STATE_FILE" 2>/dev/null)
-  fi
-  
-  if [ -n "$WEBHOOK_USER" ] && id "$WEBHOOK_USER" >/dev/null 2>&1; then
-    echo "[deploy_config] Options:"
-    echo "  Y - Switch to '$WEBHOOK_USER' (recommended for webhook operations)"
-    echo "  n - Continue as root (will fix permissions automatically)"
-    read -r -p "[deploy_config] Switch to user '$WEBHOOK_USER'? [Y/n]: " SWITCH_USER
-    SWITCH_USER=${SWITCH_USER:-Y}
-    
-    if [[ "$SWITCH_USER" =~ ^[Yy]$ ]]; then
-      echo "[deploy_config] Switching to '$WEBHOOK_USER'..."
-      exec su - "$WEBHOOK_USER" -c "cd '$SCRIPT_DIR' && bash deploy_config.sh"
-    else
-      echo "[deploy_config] Continuing as root - permissions will be fixed automatically"
-      echo
-    fi
-  else
-    echo "[deploy_config] No webhook user found, continuing as root"
-    echo
-  fi
-fi
+# Note: User switching is handled by install.sh
+# This script can run as any user - permissions will be fixed at the end if running as root
 
 echo "[deploy_config] Current user: $(whoami)"
 echo "[deploy_config] ROOT_DIR   = $ROOT_DIR"
