@@ -2,3 +2,5 @@
 /config/*
 /config/
 /test/
+/secrets/
+secrets/github_token

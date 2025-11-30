@@ -84,6 +84,107 @@ EOF
 
 echo "[webhook-setup] Unit file written."
 
+# 4.5) Настройка GitHub token для статусов
+CONFIG_FILE="$ROOT_DIR/config/projects.json"
+SECRETS_DIR="$ROOT_DIR/secrets"
+TOKEN_FILE="$SECRETS_DIR/github_token"
+
+echo
+echo "[webhook-setup] GitHub Status API Setup (optional)"
+echo "[webhook-setup] ─────────────────────────────────────"
+
+# Проверяем есть ли токен в config или файле
+EXISTING_TOKEN=""
+if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
+  EXISTING_TOKEN=$(jq -r '.webhook.githubToken // empty' "$CONFIG_FILE" 2>/dev/null)
+fi
+
+if [ -z "$EXISTING_TOKEN" ] && [ -f "$TOKEN_FILE" ]; then
+  EXISTING_TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null | tr -d '[:space:]')
+fi
+
+if [ -n "$EXISTING_TOKEN" ]; then
+  echo "[webhook-setup] ✓ GitHub token already configured"
+else
+  echo "[webhook-setup] To enable GitHub commit status updates, you need a Personal Access Token."
+  echo "[webhook-setup] Token scope required: repo:status (or full repo)"
+  echo "[webhook-setup] Create token at: https://github.com/settings/tokens"
+  echo
+  
+  TOKEN_VALID=0
+  while [ $TOKEN_VALID -eq 0 ]; do
+    read -r -p "[webhook-setup] Enter GitHub token (or press Enter to skip): " GITHUB_TOKEN
+    
+    if [ -z "$GITHUB_TOKEN" ]; then
+      echo "[webhook-setup] ℹ Skipped. Webhook will work without GitHub status updates."
+      break
+    fi
+    
+    # Валидация токена через GitHub API
+    echo "[webhook-setup] Validating token..."
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+      -H "Authorization: Bearer $GITHUB_TOKEN" \
+      -H "User-Agent: webhook-deploy-setup" \
+      https://api.github.com/user 2>/dev/null)
+    
+    if [ "$HTTP_CODE" = "200" ]; then
+      echo "[webhook-setup] ✓ Token is valid"
+      
+      # Сохраняем в projects.json если есть jq
+      if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
+        TMP_FILE=$(mktemp)
+        jq --arg token "$GITHUB_TOKEN" '.webhook.githubToken = $token' "$CONFIG_FILE" > "$TMP_FILE"
+        mv "$TMP_FILE" "$CONFIG_FILE"
+        chmod 640 "$CONFIG_FILE"
+        chown "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_FILE"
+        echo "[webhook-setup] ✓ Token saved to: $CONFIG_FILE"
+      else
+        # Fallback: сохраняем в файл
+        mkdir -p "$SECRETS_DIR"
+        echo "$GITHUB_TOKEN" > "$TOKEN_FILE"
+        chmod 600 "$TOKEN_FILE"
+        chown "${SERVICE_USER}:${SERVICE_GROUP}" "$TOKEN_FILE"
+        echo "[webhook-setup] ✓ Token saved to: $TOKEN_FILE"
+      fi
+      
+      TOKEN_VALID=1
+    elif [ "$HTTP_CODE" = "401" ]; then
+      echo "[webhook-setup] ✗ Invalid token (401 Unauthorized)"
+      echo "[webhook-setup]   Please check your token and try again."
+      echo
+    elif [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+      echo "[webhook-setup] ✗ Cannot connect to GitHub API"
+      echo "[webhook-setup]   Check your internet connection."
+      echo
+      read -r -p "[webhook-setup] Retry? [Y/n]: " RETRY
+      RETRY=${RETRY:-Y}
+      if [[ ! "$RETRY" =~ ^[Yy]$ ]]; then
+        echo "[webhook-setup] ℹ Skipped. Webhook will work without GitHub status updates."
+        break
+      fi
+    else
+      echo "[webhook-setup] ✗ Unexpected response: HTTP $HTTP_CODE"
+      echo "[webhook-setup]   Token may be valid but permissions are wrong."
+      echo
+      read -r -p "[webhook-setup] Save anyway? [y/N]: " SAVE_ANYWAY
+      SAVE_ANYWAY=${SAVE_ANYWAY:-N}
+      if [[ "$SAVE_ANYWAY" =~ ^[Yy]$ ]]; then
+        mkdir -p "$SECRETS_DIR"
+        echo "$GITHUB_TOKEN" > "$TOKEN_FILE"
+        chmod 600 "$TOKEN_FILE"
+        chown "${SERVICE_USER}:${SERVICE_GROUP}" "$TOKEN_FILE"
+        echo "[webhook-setup] ⚠ Token saved (not validated): $TOKEN_FILE"
+        TOKEN_VALID=1
+      else
+        echo "[webhook-setup] ℹ Skipped. Webhook will work without GitHub status updates."
+        break
+      fi
+    fi
+  done
+fi
+
+echo
+
 # 5) Перезагрузка systemd + включение + запуск
 echo "[webhook-setup] Reloading systemd daemon..."
 systemctl daemon-reload

@@ -166,7 +166,65 @@ function matchProjectsByPayload(payload) {
   return matches;
 }
 
-function runDeployForProject(project, ref) {
+// Send GitHub commit status (priority: env var > config file > secrets file)
+function sendGitHubStatus(repo, sha, state, description, context) {
+  let token = process.env.GITHUB_TOKEN;
+  
+  // Try to read from config file
+  if (!token && config?.webhook?.githubToken) {
+    token = config.webhook.githubToken;
+  }
+  
+  // Try to read from secrets file if still not set
+  if (!token) {
+    const tokenPath = path.join(ROOT_DIR, "secrets", "github_token");
+    try {
+      token = fs.readFileSync(tokenPath, "utf8").trim();
+    } catch (err) {
+      // Token file doesn't exist, that's ok
+    }
+  }
+  
+  if (!token) {
+    console.log("[github] No GITHUB_TOKEN found, skipping status update");
+    return;
+  }
+
+  const data = JSON.stringify({
+    state,
+    description,
+    context: context || "webhook-deploy",
+  });
+
+  const options = {
+    hostname: "api.github.com",
+    path: `/repos/${repo}/statuses/${sha}`,
+    method: "POST",
+    headers: {
+      "User-Agent": "webhook-deploy",
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Content-Length": data.length,
+    },
+  };
+
+  const req = http.request(options, (res) => {
+    if (res.statusCode === 201) {
+      console.log(`[github] Status updated: ${state} for ${repo}@${sha.substring(0, 7)}`);
+    } else {
+      console.error(`[github] Failed to update status: ${res.statusCode}`);
+    }
+  });
+
+  req.on("error", (err) => {
+    console.error("[github] Error sending status:", err.message);
+  });
+
+  req.write(data);
+  req.end();
+}
+
+function runDeployForProject(project, ref, sha) {
   const name = project.name || "noname";
   const workDir = project.workDir || ROOT_DIR;
   const deployScript =
@@ -180,6 +238,11 @@ function runDeployForProject(project, ref) {
       " "
     )}`
   );
+
+  // Send pending status to GitHub
+  if (project.repo && sha) {
+    sendGitHubStatus(project.repo, sha, "pending", `Deploying ${name}...`, `deploy/${name}`);
+  }
 
   // Prepare environment with restartOnDeploy setting
   const deployEnv = {
@@ -210,12 +273,26 @@ function runDeployForProject(project, ref) {
       `[deploy] Failed to spawn deploy for '${name}':`,
       err.message
     );
+    
+    // Send error status to GitHub
+    if (project.repo && sha) {
+      sendGitHubStatus(project.repo, sha, "error", `Deploy failed: ${err.message}`, `deploy/${name}`);
+    }
   });
 
   child.on("close", (code) => {
     console.log(
       `[deploy] Deploy process for '${name}' exited with code ${code}`
     );
+    
+    // Send success/failure status to GitHub
+    if (project.repo && sha) {
+      if (code === 0) {
+        sendGitHubStatus(project.repo, sha, "success", `Deploy completed successfully`, `deploy/${name}`);
+      } else {
+        sendGitHubStatus(project.repo, sha, "failure", `Deploy failed (exit code ${code})`, `deploy/${name}`);
+      }
+    }
   });
 }
 
@@ -281,9 +358,10 @@ const server = http.createServer((req, res) => {
 
     const repoFull = payload?.repository?.full_name || "n/a";
     const ref = payload?.ref || "n/a";
+    const sha = payload?.after || payload?.head_commit?.id || "unknown";
 
     console.log(
-      `[webhook] Payload: repo=${repoFull}, ref=${ref}, event=${event}`
+      `[webhook] Payload: repo=${repoFull}, ref=${ref}, sha=${sha.substring(0, 7)}, event=${event}`
     );
 
     if (event !== "push") {
@@ -307,7 +385,7 @@ const server = http.createServer((req, res) => {
     res.end("OK\n");
 
     for (const p of matchedProjects) {
-      runDeployForProject(p, ref);
+      runDeployForProject(p, ref, sha);
     }
   });
 });
