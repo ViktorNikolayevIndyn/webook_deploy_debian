@@ -450,14 +450,22 @@ while true; do
   echo
   echo "Project type:"
   echo "  1) Docker application (Next.js, Node.js, etc.)"
-  echo "  2) Static files (HTML/CSS/JS with Python HTTP server)"
-  PROJECT_TYPE=$(prompt "Select project type [1/2]" "1")
+  echo "  2) PHP application (Lumen, Laravel, etc.)"
+  echo "  3) Static files (HTML/CSS/JS with Python HTTP server)"
+  PROJECT_TYPE=$(prompt "Select project type [1/2/3]" "1")
   
-  if [ "$PROJECT_TYPE" = "2" ]; then
+  if [ "$PROJECT_TYPE" = "3" ]; then
     DEPLOY_MODE="static"
+    TEMPLATE_FILE="deploy-static.template.sh"
     echo "[init] Using static files deployment (Python HTTP server)"
+  elif [ "$PROJECT_TYPE" = "2" ]; then
+    DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "prod")
+    TEMPLATE_FILE="deploy-php.template.sh"
+    echo "[init] Using PHP deployment (Nginx + PHP-FPM)"
   else
     DEPLOY_MODE=$(prompt "Deploy mode argument (e.g. dev, prod)" "dev")
+    TEMPLATE_FILE="deploy.template.sh"
+    echo "[init] Using Docker deployment (Node.js, Next.js, etc.)"
   fi
 
   ROOT_DOMAIN="$WEBHOOK_ROOT_DOMAIN"
