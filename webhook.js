@@ -181,9 +181,20 @@ function runDeployForProject(project, ref) {
     )}`
   );
 
+  // Prepare environment with restartOnDeploy setting
+  const deployEnv = {
+    ...process.env,
+  };
+  
+  // Add RESTART_ON_DEPLOY env var if configured (for static sites)
+  if (project.hasOwnProperty('restartOnDeploy')) {
+    deployEnv.RESTART_ON_DEPLOY = String(project.restartOnDeploy);
+    console.log(`[deploy] restartOnDeploy=${project.restartOnDeploy}`);
+  }
+
   const child = spawn(deployScript, deployArgs, {
     cwd: workDir,
-    env: process.env,
+    env: deployEnv,
   });
 
   child.stdout.on("data", (data) => {

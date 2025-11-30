@@ -7,8 +7,12 @@ cd "$WORKDIR"
 PORT="${1:-3000}"  # Порт из аргумента или 3000 по умолчанию
 PID_FILE="$WORKDIR/.server.pid"
 
+# Read restart setting from environment (set by webhook.js) or default to false for static sites
+RESTART_ON_DEPLOY="${RESTART_ON_DEPLOY:-false}"
+
 echo "[deploy-static] Working directory: $WORKDIR"
 echo "[deploy-static] Port: $PORT"
+echo "[deploy-static] Restart on deploy: $RESTART_ON_DEPLOY"
 
 # 1. Check if server is already running
 SERVER_RUNNING=0
@@ -54,6 +58,28 @@ if [ -d ".git" ]; then
     
     AFTER_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
     echo "[deploy-static] Updated from $BEFORE_COMMIT to $AFTER_COMMIT"
+    
+    # For static content, check if restart is needed
+    if [ "$SERVER_RUNNING" -eq 1 ]; then
+      # Check config setting - only restart if explicitly set to true/yes
+      if [[ ! "$RESTART_ON_DEPLOY" =~ ^(true|True|yes|y|Y)$ ]]; then
+        echo "[deploy-static] ✓ Static content updated (restartOnDeploy not enabled)"
+        echo "[deploy-static] ✓ Server still running (PID: $OLD_PID)"
+        echo "[deploy-static] ✓ Changes are live at http://localhost:$PORT"
+        exit 0
+      fi
+      
+      # Interactive mode - ask user only if terminal is available
+      if [ -t 0 ]; then
+        read -r -p "[deploy-static] Server already running. Restart? [y/N]: " RESTART_SERVER
+        RESTART_SERVER=${RESTART_SERVER:-N}
+        if [[ ! "$RESTART_SERVER" =~ ^[Yy]$ ]]; then
+          echo "[deploy-static] ✓ Static content updated, server not restarted"
+          echo "[deploy-static] ✓ Changes are live at http://localhost:$PORT"
+          exit 0
+        fi
+      fi
+    fi
   fi
 else
   echo "[deploy-static] No .git directory - skipping git pull"
@@ -91,13 +117,24 @@ fi
 # Check if port is already in use and kill process
 if ss -tln 2>/dev/null | grep -q ":$PORT "; then
   echo "[deploy-static] WARNING: Port $PORT already in use, killing process..."
-  # Try graceful kill first
-  pkill -f "python3 -m http.server $PORT" 2>/dev/null || true
-  sleep 1
   
-  # If still running, force kill
-  if ss -tln 2>/dev/null | grep -q ":$PORT "; then
-    echo "[deploy-static] Port still in use, force killing..."
+  # Find PID using the port
+  PORT_PID=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
+  
+  if [ -n "$PORT_PID" ]; then
+    echo "[deploy-static] Found process PID: $PORT_PID"
+    # Try graceful kill first
+    kill "$PORT_PID" 2>/dev/null || true
+    sleep 1
+    
+    # If still running, force kill
+    if kill -0 "$PORT_PID" 2>/dev/null; then
+      echo "[deploy-static] Process still running, force killing..."
+      kill -9 "$PORT_PID" 2>/dev/null || true
+      sleep 2
+    fi
+  else
+    echo "[deploy-static] Cannot find PID, trying pkill..."
     pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
     sleep 2
   fi
@@ -109,6 +146,8 @@ if ss -tln 2>/dev/null | grep -q ":$PORT "; then
     ss -tlnp 2>/dev/null | grep ":$PORT " || true
     exit 1
   fi
+  
+  echo "[deploy-static] Port $PORT freed successfully"
 fi
 
 nohup python3 -m http.server "$PORT" > "$WORKDIR/server.log" 2>&1 &
