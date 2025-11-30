@@ -67,7 +67,26 @@ echo "[deploy] Using APP_NAME=$APP_NAME, PORT=$PORT"
 if [ ! -f "Dockerfile" ]; then
   echo "[deploy] Dockerfile not found – generating basic Node/Next Dockerfile..."
 
-  cat > Dockerfile <<'EOF'
+  # Для dev режима - отдельный Dockerfile с next dev
+  if [ "$MODE" = "dev" ]; then
+    cat > Dockerfile <<'EOF'
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Устанавливаем зависимости
+COPY package*.json ./
+RUN npm ci
+
+# Копируем исходники (volumes will override in compose)
+COPY . .
+
+# Dev mode - запускаем next dev
+CMD ["npm", "run", "dev"]
+EOF
+  else
+    # Для production - build и start
+    cat > Dockerfile <<'EOF'
 FROM node:20-alpine
 
 WORKDIR /app
@@ -87,6 +106,7 @@ EXPOSE 3000
 # Прод-режим: npm start (для Next – обычно "next start")
 CMD ["npm", "start"]
 EOF
+  fi
 
   echo "[deploy] Dockerfile generated."
 else
