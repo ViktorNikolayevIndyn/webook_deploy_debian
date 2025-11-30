@@ -107,46 +107,57 @@ else
   echo "[deploy] Existing $COMPOSE_FILE found – using it."
 fi
 
-# 5) Умный деплой - build только если нужно
+# 5) Умный деплой - build при любых изменениях для production
 echo "[deploy] Checking if rebuild is needed..."
 
-# Проверяем, изменились ли критичные файлы
+# Проверяем, изменились ли файлы
 NEEDS_BUILD=0
+BUILD_TYPE="full"
 
 # Если есть git, проверяем измененные файлы
 if [ -d ".git" ] && [ -n "$BEFORE_COMMIT" ] && [ -n "$AFTER_COMMIT" ]; then
   CHANGED_FILES=$(git diff --name-only "$BEFORE_COMMIT" "$AFTER_COMMIT" || echo "")
   
-  echo "[deploy] Changed files:"
-  echo "$CHANGED_FILES" | sed 's/^/  - /'
-  
-  # Критичные файлы, требующие rebuild
-  if echo "$CHANGED_FILES" | grep -qE '^(package.*\.json|Dockerfile|.*\.lock|tsconfig\.json|next\.config\.js)'; then
-    echo "[deploy] ⚠ Critical files changed (package.json, Dockerfile, etc.) - full rebuild needed"
-    NEEDS_BUILD=1
+  if [ -n "$CHANGED_FILES" ]; then
+    echo "[deploy] Changed files:"
+    echo "$CHANGED_FILES" | sed 's/^/  - /'
+    
+    # Для production режима - всегда rebuild при изменениях (Next.js требует пересборки)
+    if [ "$MODE" = "prod" ]; then
+      echo "[deploy] ⚠ Production mode - rebuild required for any changes"
+      NEEDS_BUILD=1
+    else
+      # Для dev режима - проверяем только критичные файлы
+      if echo "$CHANGED_FILES" | grep -qE '^(package.*\.json|Dockerfile|.*\.lock|tsconfig\.json|next\.config\.js|tailwind\.config\.)'; then
+        echo "[deploy] ⚠ Critical files changed - full rebuild needed"
+        NEEDS_BUILD=1
+      else
+        echo "[deploy] ✓ Only source files changed in dev mode - quick restart"
+        NEEDS_BUILD=0
+      fi
+    fi
   else
-    echo "[deploy] ✓ Only source files changed - trying hot restart without rebuild"
-    NEEDS_BUILD=0
+    echo "[deploy] No file changes detected"
   fi
 else
   # Если нет git или это первый запуск - делаем build
+  echo "[deploy] First deployment or no git - full build required"
   NEEDS_BUILD=1
 fi
 
 if [ "$NEEDS_BUILD" -eq 1 ]; then
-  echo "[deploy] Running FULL BUILD: docker compose -f $COMPOSE_FILE build $SERVICE_NAME"
+  echo "[deploy] Running FULL BUILD: docker compose -f $COMPOSE_FILE build ${APP_NAME}-${MODE:-app}"
   docker compose -f "$COMPOSE_FILE" build "${APP_NAME}-${MODE:-app}"
   
-  echo "[deploy] Starting containers: docker compose -f $COMPOSE_FILE up -d"
+  echo "[deploy] Starting containers: docker compose -f $COMPOSE_FILE up -d ${APP_NAME}-${MODE:-app}"
   docker compose -f "$COMPOSE_FILE" up -d "${APP_NAME}-${MODE:-app}"
 else
-  # Быстрый рестарт без build (только для изменений кода)
-  echo "[deploy] Running QUICK RESTART: docker compose -f $COMPOSE_FILE restart"
+  # Быстрый рестарт без build (только для dev mode с изменениями кода)
+  echo "[deploy] Running QUICK RESTART: docker compose -f $COMPOSE_FILE restart ${APP_NAME}-${MODE:-app}"
   docker compose -f "$COMPOSE_FILE" restart "${APP_NAME}-${MODE:-app}"
   
-  # Для Next.js / hot reload - просто обновляем файлы внутри контейнера
   if docker compose -f "$COMPOSE_FILE" ps "${APP_NAME}-${MODE:-app}" | grep -q "Up"; then
-    echo "[deploy] ✓ Container restarted - changes will be hot-reloaded (if supported)"
+    echo "[deploy] ✓ Container restarted - dev mode hot reload active"
   fi
 fi
 
