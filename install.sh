@@ -219,6 +219,37 @@ fi
 echo
 echo "=== install.sh finished ==="
 echo
+
+# Offer to switch to webhook user and run deploy_config.sh
+if [ -f "$SSH_STATE_FILE" ]; then
+  SSH_USER=$(jq -r '.sshUser // empty' "$SSH_STATE_FILE" 2>/dev/null)
+  
+  if [ -n "$SSH_USER" ] && id "$SSH_USER" >/dev/null 2>&1; then
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║  IMPORTANT: Deploy projects as webhook user                   ║"
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo
+    echo "To avoid permission issues, projects should be deployed as the"
+    echo "same user that runs the webhook service: $SSH_USER"
+    echo
+    read -r -p "Switch to '$SSH_USER' and run deploy_config.sh now? [Y/n]: " SWITCH_USER
+    SWITCH_USER=${SWITCH_USER:-Y}
+    
+    if [[ "$SWITCH_USER" =~ ^[Yy]$ ]]; then
+      echo
+      echo "[install] Switching to user '$SSH_USER' and running deploy_config.sh..."
+      echo
+      exec su - "$SSH_USER" -c "cd '$SCRIPT_DIR' && bash deploy_config.sh"
+    else
+      echo
+      echo "[install] Skipped. You can run it manually later:"
+      echo "  sudo -u $SSH_USER $SCRIPT_DIR/deploy_config.sh"
+    fi
+  fi
+fi
+
+echo
+echo
 echo "✓ Installation complete!"
 echo
 echo "📚 Documentation:"

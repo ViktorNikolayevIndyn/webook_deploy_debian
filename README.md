@@ -70,7 +70,7 @@ chmod +x start.sh
 
 > You should run `start.sh` as **root**, especially on a fresh LXC.
 
-### 3.2. Run the main starter
+### 3.2. Run the main starter (as root)
 
 ```bash
 ./start.sh
@@ -91,6 +91,28 @@ chmod +x start.sh
    - For each project, asks for repo / branch / workDir / domains / tunnel name.
    - Writes `config/projects.json` and copies `deploy.template.sh` into each project folder as `deploy.sh`.
    - Writes `config/projects_state.json`.
+
+### 3.3. Deploy projects (as webuser)
+
+**IMPORTANT:** After initial setup with root, deploy projects as the webhook user to avoid permission issues:
+
+```bash
+# Switch to the webhook user (e.g., webuser)
+sudo -u webuser bash
+cd /opt/webook_deploy_debian/scripts
+./deploy_config.sh
+```
+
+This ensures:
+- All project files are owned by webuser
+- Webhook can manage processes (start/stop servers)
+- No permission conflicts during automated deployments
+
+For subsequent updates:
+```bash
+# Always deploy as webuser
+sudo -u webuser /opt/webook_deploy_debian/scripts/deploy_config.sh
+```
 
 `start.sh` also tracks **script versions**:
 

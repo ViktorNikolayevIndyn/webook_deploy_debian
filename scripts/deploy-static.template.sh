@@ -67,19 +67,25 @@ fi
 SHOULD_RESTART=0
 
 if [ "$SERVER_RUNNING" -eq 0 ]; then
-  # Server not running - need to start
+  # Server not running - need to start (initial deployment)
   SHOULD_RESTART=1
+  echo "[deploy-static] Server not running - will start it"
 elif [ "$HAS_CHANGES" -eq 1 ]; then
   # Changes detected and server running - check config
   if [[ "$RESTART_ON_DEPLOY" =~ ^(true|True|yes|y|Y)$ ]]; then
     # Explicitly enabled restart
     SHOULD_RESTART=1
+    echo "[deploy-static] Will restart server (restartOnDeploy=true)"
   elif [ -t 0 ]; then
     # Interactive mode - ask user
     read -r -p "[deploy-static] Server already running. Restart? [y/N]: " RESTART_SERVER
     RESTART_SERVER=${RESTART_SERVER:-N}
     if [[ "$RESTART_SERVER" =~ ^[Yy]$ ]]; then
       SHOULD_RESTART=1
+    else
+      echo "[deploy-static] ✓ Static content updated, server not restarted"
+      echo "[deploy-static] ✓ Changes are live at http://localhost:$PORT"
+      exit 0
     fi
   else
     # Non-interactive + restartOnDeploy not true = don't restart
