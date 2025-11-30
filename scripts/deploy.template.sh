@@ -2,10 +2,14 @@
 set -e
 
 MODE="$1"
+FORCE_RECREATE="${2:-false}"
 WORKDIR="$(pwd)"
 
 echo "[deploy] Working dir: $WORKDIR"
 echo "[deploy] Mode: ${MODE:-none}"
+if [[ "$FORCE_RECREATE" == "force" ]]; then
+  echo "[deploy] Force mode: will recreate Dockerfile and docker-compose.yml"
+fi
 
 # 1) git pull с проверкой изменений
 if [ -d ".git" ]; then
@@ -64,8 +68,12 @@ fi
 echo "[deploy] Using APP_NAME=$APP_NAME, PORT=$PORT"
 
 # 3) Если нет Dockerfile – создаём минимальный для Node/Next
-if [ ! -f "Dockerfile" ]; then
-  echo "[deploy] Dockerfile not found – generating basic Node/Next Dockerfile..."
+if [ ! -f "Dockerfile" ] || [[ "$FORCE_RECREATE" == "force" ]]; then
+  if [ -f "Dockerfile" ] && [[ "$FORCE_RECREATE" == "force" ]]; then
+    echo "[deploy] Force mode: removing existing Dockerfile"
+    rm -f Dockerfile
+  fi
+  echo "[deploy] Generating Dockerfile for mode: $MODE"
 
   # Для dev режима - отдельный Dockerfile с next dev
   if [ "$MODE" = "dev" ]; then
@@ -114,8 +122,12 @@ else
 fi
 
 # 4) Если нет docker-compose.yml – создаём минимальный
-if [ ! -f "$COMPOSE_FILE" ]; then
-  echo "[deploy] $COMPOSE_FILE not found – generating basic compose file..."
+if [ ! -f "$COMPOSE_FILE" ] || [[ "$FORCE_RECREATE" == "force" ]]; then
+  if [ -f "$COMPOSE_FILE" ] && [[ "$FORCE_RECREATE" == "force" ]]; then
+    echo "[deploy] Force mode: removing existing docker-compose.yml"
+    rm -f "$COMPOSE_FILE"
+  fi
+  echo "[deploy] Generating docker-compose.yml for mode: $MODE"
 
   # Для dev режима - монтируем код как volume для hot reload
   if [ "$MODE" = "dev" ]; then
