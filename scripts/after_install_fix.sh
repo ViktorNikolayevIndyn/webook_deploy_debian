@@ -3,6 +3,13 @@ set -e
 
 echo "=== after_install_fix.sh ==="
 
+# Check if running as root
+if [ "$(id -u)" -ne 0 ]; then
+  echo "[after] ERROR: This script must be run as root (for chown operations)"
+  echo "[after] Please run: sudo $0"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$ROOT_DIR/config"
