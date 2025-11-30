@@ -289,8 +289,12 @@ echo "[status] Docker containers:"
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 
 echo
-echo "[status] Listening TCP ports (filtered by possible webhook ports):"
-ss -tln 2>/dev/null | awk 'NR==1 || /:4000 /'
+echo "[status] Python HTTP servers (static projects):"
+ps aux | grep -E '[p]ython3 -m http.server' | awk '{print "  PID: " $2 " | Port: " $NF " | User: " $1}'
+
+echo
+echo "[status] Listening TCP ports (common app ports):"
+ss -tln 2>/dev/null | awk 'NR==1 || /:300[0-9]/ || /:400[0-9]/ || /:500[0-9]/'
 
 echo
 echo "=== deploy_config.sh finished ==="

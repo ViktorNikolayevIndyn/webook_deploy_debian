@@ -44,7 +44,8 @@ if [ -d ".git" ]; then
     # Reset any local changes (safe for static sites)
     echo "[deploy-static] Resetting local changes..."
     git reset --hard HEAD
-    git clean -fd
+    # Clean untracked files but preserve deploy.sh, .server.pid, server.log
+    git clean -fd -e deploy.sh -e .server.pid -e server.log -e '*.log'
     
     git pull --ff-only || {
       echo "[deploy-static] ERROR: git pull failed"
