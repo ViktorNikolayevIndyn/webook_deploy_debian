@@ -74,6 +74,9 @@ if [ "$HAS_CHANGES" -eq 1 ] || [ "$SERVER_RUNNING" -eq 0 ]; then
   # Fallback: kill by port
   pkill -f "python3 -m http.server $PORT" 2>/dev/null || true
   sleep 0.5
+  
+  # Remove old log file to avoid permission issues
+  rm -f "$WORKDIR/server.log"
 fi
 
 # 4. Start new server
