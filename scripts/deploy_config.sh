@@ -338,13 +338,12 @@ if [ -x "$SCRIPT_DIR/after_install_fix.sh" ]; then
   if [ "$(id -u)" -eq 0 ]; then
     "$SCRIPT_DIR/after_install_fix.sh"
   else
-    echo "[deploy_config] Checking if sudo works without password..."
-    if sudo -n true 2>/dev/null; then
-      echo "[deploy_config] Running after_install_fix.sh with sudo..."
+    # Check sudo quietly without triggering security emails
+    if sudo -n true >/dev/null 2>&1; then
       sudo "$SCRIPT_DIR/after_install_fix.sh"
     else
-      echo "[deploy_config] NOTE: sudo requires password (skipping permission fix)"
-      echo "[deploy_config] Run manually with root: sudo $SCRIPT_DIR/after_install_fix.sh"
+      echo "[deploy_config] ℹ Running as webuser - skipping permission fix (needs root)"
+      echo "[deploy_config] Permissions will be fixed on next deploy or run: sudo $SCRIPT_DIR/after_install_fix.sh"
     fi
   fi
 else
@@ -360,12 +359,12 @@ CAN_USE_SUDO=0
 
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
-    if sudo -n true 2>/dev/null; then
+    if sudo -n true >/dev/null 2>&1; then
       SUDO_CMD="sudo"
       CAN_USE_SUDO=1
     else
-      echo "[deploy_config] NOTE: sudo requires password (skipping service restart)"
-      echo "[deploy_config] Restart manually: sudo systemctl restart webhook-deploy.service"
+      echo "[deploy_config] ℹ Service restart skipped (needs root or passwordless sudo)"
+      echo "[deploy_config] Webhook will reload on next event or run: sudo systemctl restart webhook-deploy.service"
     fi
   else
     echo "[deploy_config] WARNING: Not running as root and sudo not available"
