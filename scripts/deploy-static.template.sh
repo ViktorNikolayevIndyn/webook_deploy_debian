@@ -88,11 +88,27 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-# Check if port is already in use
+# Check if port is already in use and kill process
 if ss -tln 2>/dev/null | grep -q ":$PORT "; then
-  echo "[deploy-static] WARNING: Port $PORT already in use, attempting to kill..."
+  echo "[deploy-static] WARNING: Port $PORT already in use, killing process..."
+  # Try graceful kill first
   pkill -f "python3 -m http.server $PORT" 2>/dev/null || true
   sleep 1
+  
+  # If still running, force kill
+  if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+    echo "[deploy-static] Port still in use, force killing..."
+    pkill -9 -f "python3 -m http.server $PORT" 2>/dev/null || true
+    sleep 2
+  fi
+  
+  # Final check
+  if ss -tln 2>/dev/null | grep -q ":$PORT "; then
+    echo "[deploy-static] ✗ ERROR: Cannot free port $PORT"
+    echo "[deploy-static] Processes using port $PORT:"
+    ss -tlnp 2>/dev/null | grep ":$PORT " || true
+    exit 1
+  fi
 fi
 
 nohup python3 -m http.server "$PORT" > "$WORKDIR/server.log" 2>&1 &
