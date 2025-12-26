@@ -5,7 +5,10 @@
 
 set -e
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || {
+    echo "Error: Unable to determine script directory" >&2
+    exit 1
+}
 
 # Colors for better visibility
 GREEN='\033[0;32m'
@@ -248,7 +251,7 @@ show_tree() {
         echo "Note: 'tree' command not installed. Showing basic structure..."
         echo
         cd "$ROOT_DIR"
-        find . -not -path '*/\.git/*' -type f -o -type d | head -100 | sort
+        find . -not -path '*/\.git/*' \( -type f -o -type d \) | head -100 | sort
     fi
 }
 
@@ -262,9 +265,9 @@ show_config_structure() {
         echo
         
         echo "Files present:"
-        ls -lh "$CONFIG_DIR" 2>/dev/null | tail -n +2 | while read -r line; do
-            filename=$(echo "$line" | awk '{print $NF}')
-            if [ -f "$CONFIG_DIR/$filename" ]; then
+        for file in "$CONFIG_DIR"/*; do
+            if [ -f "$file" ]; then
+                filename=$(basename "$file")
                 echo -e "  ${GREEN}✓${NC} $filename"
             fi
         done
